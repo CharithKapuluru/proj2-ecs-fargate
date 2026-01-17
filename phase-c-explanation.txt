@@ -1,0 +1,3045 @@
+================================================================================
+PHASE C: ECR REPOSITORY + PUSH IMAGE - DETAILED EXPLANATION
+================================================================================
+
+PROJECT: AWS ECS Fargate Deployment with Terraform
+PHASE: C - Upload Docker Image to AWS ECR
+DATE: January 16, 2026
+AUTHOR: Charith Kapuluru
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+1. The Big Picture - What Phase C Accomplishes
+2. Prerequisites
+3. Step-by-Step Breakdown
+   3.1 Create ECR Repository
+   3.2 Authenticate Docker to ECR
+   3.3 Tag Docker Image for ECR
+   3.4 Push Image to ECR
+   3.5 Verify Image in ECR
+4. Technical Deep Dives
+   4.1 How ECR Works
+   4.2 How Docker Image Layers Work
+   4.3 How Docker Push Works
+   4.4 Image Scanning and Security
+5. Understanding Image Tags and Manifests
+6. Troubleshooting Common Issues
+7. Summary and Next Steps
+
+================================================================================
+1. THE BIG PICTURE - WHAT PHASE C ACCOMPLISHES
+================================================================================
+
+Goal:
+-----
+Upload your Docker image from your Mac to AWS ECR so that ECS can later
+download it and run it in the cloud.
+
+Real-World Analogy:
+-------------------
+Think of it like uploading a photo:
+- Your Mac = Your camera's memory card
+- Docker image = Your photo
+- ECR = iCloud/Google Photos (cloud storage)
+- ECS (later) = Your friend's phone downloading the photo
+
+Why We Need This:
+-----------------
+ECS tasks cannot pull images from your laptop. They need images stored in:
+- ECR (preferred - fast, private, optimized for AWS)
+- Docker Hub (public, slower)
+- Other container registries
+
+We use ECR because:
+- Private (only your AWS account can access)
+- Fast (AWS internal network)
+- Secure (automatic encryption, vulnerability scanning)
+- Integrated (works seamlessly with ECS)
+
+The Journey of Your Image:
+---------------------------
+
+Phase A:
+```
+Your Mac
+├─ Dockerfile (recipe)
+├─ app.py (code)
+└─ Built image: proj2-app:local (238 MB)
+```
+
+Phase C (this phase):
+```
+Your Mac                          AWS ECR
+proj2-app:local    →  push  →    proj2-app:v1
+(local storage)                   (cloud storage)
+```
+
+Phase E (future):
+```
+AWS ECR                           AWS ECS
+proj2-app:v1      →  pull  →     Running container
+(cloud storage)                   (production)
+```
+
+What We're Doing:
+-----------------
+1. Create a "repository" in ECR (like creating an album in iCloud)
+2. Log Docker into ECR (authenticate)
+3. Tag image with ECR address (rename for upload)
+4. Push image to ECR (upload)
+5. Verify it uploaded correctly
+
+After This Phase:
+-----------------
+Your Docker image will be:
+✓ Stored in AWS
+✓ Accessible to ECS
+✓ Scanned for vulnerabilities
+✓ Encrypted at rest
+✓ Ready for deployment
+
+================================================================================
+2. PREREQUISITES
+================================================================================
+
+Before Phase C:
+---------------
+✓ Phase A completed: Docker image built (proj2-app:local)
+✓ Phase B completed: AWS CLI configured
+✓ Docker Desktop running
+✓ AWS credentials valid
+
+Verify Prerequisites:
+---------------------
+
+# 1. Docker image exists
+docker images | grep proj2-app
+# Expected: proj2-app:local
+
+# 2. Docker is running
+docker ps
+# Expected: No errors
+
+# 3. AWS CLI works
+aws sts get-caller-identity
+# Expected: Returns your identity
+
+# 4. AWS region set
+aws configure get region
+# Expected: us-east-1
+
+If any fail, revisit Phase A or B.
+
+================================================================================
+3. STEP-BY-STEP BREAKDOWN
+================================================================================
+
+3.1 CREATE ECR REPOSITORY
+--------------------------
+
+Command:
+--------
+aws ecr create-repository \
+  --repository-name proj2-app \
+  --region us-east-1 \
+  --image-scanning-configuration scanOnPush=true \
+  --tags Key=Project,Value=proj2 Key=Environment,Value=dev
+
+What This Command Does:
+------------------------
+Creates a private Docker registry repository in AWS ECR.
+
+Parameter Breakdown:
+--------------------
+
+Parameter 1: Repository Name
+----------------------------
+--repository-name proj2-app
+
+What it is: The name of your image repository.
+
+Naming rules:
+- Lowercase only
+- Can contain: letters, numbers, hyphens, underscores, forward slashes
+- Max length: 256 characters
+- Must be unique within your account in this region
+
+We chose: proj2-app
+- Simple and descriptive
+- Matches our project name
+- Easy to remember
+
+Parameter 2: Region
+-------------------
+--region us-east-1
+
+Why specify region?
+- ECR repositories are region-specific
+- Must match where your ECS cluster will run
+- We're using us-east-1 for everything
+
+Parameter 3: Image Scanning
+----------------------------
+--image-scanning-configuration scanOnPush=true
+
+What it does: Automatically scans for security vulnerabilities when you push an image.
+
+Scan types:
+- scanOnPush=true: Scan every push (we use this)
+- scanOnPush=false: Manual scanning only
+
+What the scan looks for:
+- CVEs (Common Vulnerabilities and Exposures)
+- Outdated packages with known security issues
+- OS-level vulnerabilities
+- Language-specific vulnerabilities (Python, Node.js, etc.)
+
+Example vulnerabilities:
+- "Python 3.11.0 has critical security flaw CVE-2023-12345"
+- "OpenSSL 1.1.1 has high severity vulnerability"
+- "Debian package X has known exploit"
+
+Scan results:
+- Shown in AWS Console
+- Severity levels: CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL
+- Recommendations for fixes
+
+Time to scan: 1-2 minutes after push
+
+Parameter 4: Tags
+-----------------
+--tags Key=Project,Value=proj2 Key=Environment,Value=dev
+
+What tags are: Metadata labels for AWS resources.
+
+Format: Key=Value pairs
+
+Our tags:
+- Project=proj2: Identifies which project this belongs to
+- Environment=dev: Indicates this is development (not prod)
+
+Why tag resources?
+- Organization: Find all resources for one project
+- Cost tracking: See costs by project
+- Automation: Scripts can filter by tags
+- Access control: IAM policies can use tags
+
+Example: Find all proj2 resources
+aws resourcegroupstaggingapi get-resources --tag-filters "Key=Project,Values=proj2"
+
+Best practices:
+- Always tag resources
+- Use consistent tag keys
+- Common tags: Project, Environment, Owner, CostCenter
+
+The Response:
+-------------
+
+Output:
+```json
+{
+    "repository": {
+        "repositoryArn": "arn:aws:ecr:us-east-1:501894534533:repository/proj2-app",
+        "registryId": "501894534533",
+        "repositoryName": "proj2-app",
+        "repositoryUri": "501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app",
+        "createdAt": "2026-01-16T17:22:51.150000-06:00",
+        "imageTagMutability": "MUTABLE",
+        "imageScanningConfiguration": {
+            "scanOnPush": true
+        },
+        "encryptionConfiguration": {
+            "encryptionType": "AES256"
+        }
+    }
+}
+```
+
+Field Breakdown:
+----------------
+
+Field: repositoryArn
+--------------------
+"repositoryArn": "arn:aws:ecr:us-east-1:501894534533:repository/proj2-app"
+
+ARN structure:
+arn:aws:ecr:us-east-1:501894534533:repository/proj2-app
+│   │   │   │         │           │          │
+│   │   │   │         │           │          └─ Repository name
+│   │   │   │         │           └──────────── Resource type
+│   │   │   │         └──────────────────────── Account ID
+│   │   │   └────────────────────────────────── Region
+│   │   └────────────────────────────────────── Service (ECR)
+│   └────────────────────────────────────────── Partition (aws)
+└────────────────────────────────────────────── Always "arn"
+
+What it's used for:
+- Uniquely identifies this repository
+- Used in IAM policies
+- Used in CloudTrail logs
+- Required for cross-account access
+
+Field: registryId
+-----------------
+"registryId": "501894534533"
+
+What it is: Your AWS account ID.
+
+Why it matters:
+- ECR registry is per-account
+- Identifies who owns this repository
+- Used in repository URL
+
+Field: repositoryName
+---------------------
+"repositoryName": "proj2-app"
+
+The name you specified.
+
+Field: repositoryUri
+--------------------
+"repositoryUri": "501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app"
+
+THIS IS THE MOST IMPORTANT FIELD!
+
+This is the full address of your repository.
+
+Format:
+<account-id>.dkr.ecr.<region>.amazonaws.com/<repository-name>
+
+Breaking it down:
+501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app
+│           │   │   │           │            │
+│           │   │   │           │            └─ Repository name
+│           │   │   │           └────────────── AWS domain
+│           │   │   └────────────────────────── Region
+│           │   └────────────────────────────── ECR service
+│           └────────────────────────────────── Docker registry indicator
+└────────────────────────────────────────────── Account ID
+
+You'll use this URI to:
+- Tag your images
+- Push images
+- Pull images (in ECS task definitions)
+
+Real-world analogy:
+Like a website URL - uniquely identifies where your images live.
+
+Field: createdAt
+----------------
+"createdAt": "2026-01-16T17:22:51.150000-06:00"
+
+Timestamp when repository was created.
+
+Format: ISO 8601
+- Date: 2026-01-16
+- Time: 17:22:51
+- Timezone: -06:00 (CST)
+
+Field: imageTagMutability
+--------------------------
+"imageTagMutability": "MUTABLE"
+
+Options:
+- MUTABLE: Tags can be overwritten (default, we use this)
+- IMMUTABLE: Tags cannot be changed once set
+
+MUTABLE example:
+1. Push image with tag "v1"
+2. Later, push different image with tag "v1" again
+3. ✓ Succeeds - overwrites previous v1
+
+IMMUTABLE example:
+1. Push image with tag "v1"
+2. Later, push different image with tag "v1" again
+3. ✗ Fails - v1 already exists
+
+Why MUTABLE?
+- Flexibility during development
+- Can fix mistakes
+- Can update "latest" tag
+
+Why IMMUTABLE?
+- Production safety
+- Prevents accidental overwrites
+- Ensures reproducibility
+
+We use MUTABLE for learning.
+
+Field: imageScanningConfiguration
+----------------------------------
+"imageScanningConfiguration": {
+    "scanOnPush": true
+}
+
+Confirms scan-on-push is enabled.
+
+Field: encryptionConfiguration
+-------------------------------
+"encryptionConfiguration": {
+    "encryptionType": "AES256"
+}
+
+What it means: Images are encrypted at rest using AES-256 encryption.
+
+Encryption types:
+- AES256: AWS-managed encryption (default, we use this)
+- KMS: Customer-managed encryption key (advanced)
+
+AES-256:
+- Military-grade encryption
+- 256-bit key
+- Automatic (no setup needed)
+- Free
+
+Why it matters:
+- Protects data on AWS disks
+- Compliance requirement for some industries
+- Defense-in-depth security
+
+What Is Encrypted:
+- Image layers (your application code)
+- Image manifests
+- Metadata
+
+What This Step Accomplished:
+-----------------------------
+
+✅ ECR repository created
+✅ Named: proj2-app
+✅ Located in: us-east-1
+✅ Scan-on-push enabled
+✅ Encryption enabled (AES-256)
+✅ Tags applied
+✅ Ready to receive images
+
+
+3.2 AUTHENTICATE DOCKER TO ECR
+-------------------------------
+
+Command:
+--------
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 501894534533.dkr.ecr.us-east-1.amazonaws.com
+
+This is a PIPED command - two commands connected with |
+
+What a Pipe Does:
+-----------------
+
+The | symbol "pipes" output from one command as input to another.
+
+```
+Command 1  |  Command 2
+  output   →   input
+```
+
+Example:
+```
+echo "hello" | tr 'a-z' 'A-Z'
+     ↓             ↑
+  "hello"      Receives "hello", converts to "HELLO"
+```
+
+Our Piped Command:
+------------------
+
+Part 1: Get Password
+--------------------
+aws ecr get-login-password --region us-east-1
+
+What it does:
+Generates a temporary password for Docker to log into ECR.
+
+Output (example):
+```
+eyJwYXlsb2FkIjoiYUNWTjBNZmpHR3lRaEV4OFhSVWZqSkZ5...
+(~1000 more characters)
+```
+
+This is a Base64-encoded authentication token.
+
+Properties:
+- Length: ~1000-3000 characters
+- Format: Base64 string
+- Valid for: 12 hours
+- Contains: Encrypted credentials
+
+Security:
+- This is NOT your AWS password
+- This is NOT your secret access key
+- This is a temporary token specifically for ECR
+- Expires after 12 hours
+
+How AWS generates it:
+1. You run the command
+2. AWS CLI sends your access key ID + signature
+3. AWS verifies your identity
+4. AWS generates temporary ECR token
+5. Returns token
+
+Part 2: Docker Login
+--------------------
+docker login --username AWS --password-stdin 501894534533.dkr.ecr.us-east-1.amazonaws.com
+
+What it does:
+Authenticates Docker to ECR using the password from Part 1.
+
+Parameter: --username AWS
+--------------------------
+Username is ALWAYS "AWS" for ECR (not your IAM username).
+
+Why "AWS"?
+- ECR uses a fixed username
+- Real authentication is in the password
+- AWS convention
+
+Parameter: --password-stdin
+----------------------------
+Reads password from standard input (the pipe).
+
+Alternative (not recommended):
+docker login --username AWS --password <paste-token-here> ...
+
+Why --password-stdin is better:
+- Password doesn't appear in command history
+- Password doesn't appear in process list
+- More secure
+
+Parameter: Registry URL
+-----------------------
+501894534533.dkr.ecr.us-east-1.amazonaws.com
+
+This is your ECR registry URL (not the repository URL).
+
+Registry vs Repository:
+-----------------------
+
+Registry URL (for login):
+501894534533.dkr.ecr.us-east-1.amazonaws.com
+
+Repository URL (for push/pull):
+501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app
+
+Think of it like:
+- Registry = GitHub.com (the site)
+- Repository = github.com/username/repo (specific repo)
+
+The Login Process:
+------------------
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Step 1: aws ecr get-login-password                        │
+│                                                            │
+│ AWS CLI:                                                   │
+│ 1. Reads your credentials from ~/.aws/credentials         │
+│ 2. Creates signed request to AWS                          │
+│ 3. Sends: "Generate ECR token for me"                     │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 2: AWS processes request                             │
+│                                                            │
+│ AWS:                                                       │
+│ 1. Verifies signature (you are test_user)                 │
+│ 2. Checks permissions (ecr:GetAuthorizationToken)         │
+│ 3. Generates temporary token                              │
+│    - Encodes: account ID, permissions, expiration         │
+│    - Encrypts token                                        │
+│    - Valid for 12 hours                                    │
+│ 4. Returns Base64-encoded token                            │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 3: Token piped to docker login                       │
+│                                                            │
+│ Token (1000+ chars): eyJwYXlsb2FkIjoi...                  │
+│                                                            │
+│ Passed via pipe to docker login command                    │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 4: Docker receives token                             │
+│                                                            │
+│ Docker:                                                    │
+│ 1. Receives password from stdin                            │
+│ 2. Prepares authentication request to ECR                  │
+│    - Username: AWS                                         │
+│    - Password: <token>                                     │
+│    - Registry: 501894534533.dkr.ecr.us-east-1...          │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 5: Docker sends auth request to ECR                  │
+│                                                            │
+│ HTTPS POST to:                                             │
+│ https://501894534533.dkr.ecr.us-east-1.amazonaws.com/     │
+│                                                            │
+│ Headers:                                                   │
+│   Authorization: Basic QVdTOmV5SndZWGxzYjJGa0lqb2l...     │
+│   (Base64 of "AWS:<token>")                                │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 6: ECR validates token                               │
+│                                                            │
+│ ECR:                                                       │
+│ 1. Decodes token                                           │
+│ 2. Decrypts token                                          │
+│ 3. Validates:                                              │
+│    - Is token valid? (not expired)                         │
+│    - Is token for this account? (501894534533)            │
+│    - Is token for this registry? (us-east-1)              │
+│ 4. Result: ✓ Valid                                         │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 7: ECR sends success response                        │
+│                                                            │
+│ HTTP 200 OK                                                │
+│ Body: {"token": "..."}                                     │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 8: Docker saves credentials                          │
+│                                                            │
+│ Location: ~/.docker/config.json                           │
+│                                                            │
+│ Stores:                                                    │
+│ - Registry: 501894534533.dkr.ecr.us-east-1...             │
+│ - Credentials: Saved to macOS Keychain (secure)           │
+│                                                            │
+│ Duration: 12 hours                                         │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 9: Docker prints success message                     │
+│                                                            │
+│ Output: "Login Succeeded"                                  │
+└────────────────────────────────────────────────────────────┘
+```
+
+Output:
+-------
+Login Succeeded
+
+This means:
+✓ Token was valid
+✓ ECR accepted authentication
+✓ Docker can now push/pull images
+✓ Credentials saved for 12 hours
+
+Where Credentials Are Stored:
+------------------------------
+
+File: ~/.docker/config.json
+```json
+{
+  "auths": {
+    "501894534533.dkr.ecr.us-east-1.amazonaws.com": {}
+  },
+  "credsStore": "desktop"
+}
+```
+
+Notice: No password stored in the JSON file!
+
+"credsStore": "desktop" means:
+- Credentials stored in macOS Keychain
+- More secure than plain text
+- Managed by Docker Desktop
+
+Token Expiration:
+-----------------
+
+After 12 hours, the token expires.
+
+What happens:
+```
+docker push ...
+Error: unauthorized: authentication required
+```
+
+Solution:
+Re-run the login command:
+aws ecr get-login-password ... | docker login ...
+
+Best practice:
+Run login command at start of each work session.
+
+What This Step Accomplished:
+-----------------------------
+
+✅ Generated temporary ECR token (12-hour validity)
+✅ Authenticated Docker to ECR
+✅ Credentials saved securely
+✅ Docker can now push images to ECR
+
+
+3.3 TAG DOCKER IMAGE FOR ECR
+-----------------------------
+
+Command:
+--------
+docker tag proj2-app:local 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+
+What This Command Does:
+------------------------
+Creates a new tag (name) for your existing Docker image, formatted for ECR.
+
+What Is a Docker Tag?
+---------------------
+
+A tag is a label/name for a Docker image.
+
+Think of it like:
+- Contacts in your phone
+- "Mom" → 555-1234
+- "Work" → 555-1234 (same number, different name)
+
+One image can have multiple tags:
+```
+Image ID: b980bc5cb0b6
+├─ proj2-app:local
+└─ 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+```
+
+Both tags point to THE SAME IMAGE.
+
+No duplication!
+- Not 238 MB + 238 MB
+- Just one image with two names
+
+Command Breakdown:
+------------------
+
+Format:
+docker tag <source-image> <target-image>
+
+Source: proj2-app:local
+------------------------
+The image we built in Phase A.
+
+Format: <name>:<tag>
+- Name: proj2-app
+- Tag: local
+
+This is the "local development" name.
+
+Target: 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+-------------------------------------------------------------------
+The new ECR-formatted name.
+
+Breaking it down:
+501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+│           │   │   │           │            │       │  │
+│           │   │   │           │            │       │  └─ Version tag
+│           │   │   │           │            │       └──── Separator
+│           │   │   │           │            └──────────── Repository name
+│           │   │   │           └───────────────────────── AWS domain
+│           │   │   └───────────────────────────────────── Region
+│           │   └───────────────────────────────────────── ECR service
+│           └───────────────────────────────────────────── Docker registry marker
+└───────────────────────────────────────────────────────── Account ID
+
+Each part explained:
+--------------------
+
+Part 1: Account ID
+------------------
+501894534533
+
+Your AWS account number.
+
+Why needed:
+- ECR is per-account
+- Identifies which account owns the repository
+- Prevents name collisions
+
+Part 2: Registry Marker
+-----------------------
+dkr
+
+Stands for "Docker".
+
+Convention for all Docker registries.
+
+Part 3: ECR Service
+-------------------
+ecr
+
+Identifies this as ECR (Elastic Container Registry).
+
+Part 4: Region
+--------------
+us-east-1
+
+The AWS region where your repository exists.
+
+Must match where you created the repository.
+
+Part 5: AWS Domain
+------------------
+amazonaws.com
+
+AWS's domain name.
+
+Part 6: Repository Name
+-----------------------
+proj2-app
+
+The repository we created in Step 3.1.
+
+Part 7: Version Tag
+-------------------
+:v1
+
+The version identifier.
+
+Common tagging strategies:
+
+Strategy 1: Semantic Versioning
+--------------------------------
+- v1.0.0, v1.0.1, v1.1.0, v2.0.0
+- Major.Minor.Patch
+- Best for released versions
+
+Strategy 2: Sequential
+----------------------
+- v1, v2, v3, v4
+- Simple incrementing
+- We use this (learning project)
+
+Strategy 3: Git SHA
+-------------------
+- git-abc123, git-def456
+- Ties to exact code version
+- Good for CI/CD
+
+Strategy 4: Date-based
+----------------------
+- 2026-01-16, 2026-01-17
+- Easy to see when built
+- Good for daily builds
+
+Strategy 5: Environment
+-----------------------
+- production, staging, development
+- Indicates deployment target
+- Can be updated
+
+Strategy 6: Latest
+------------------
+- :latest
+- Always points to most recent
+- Convenient but risky
+
+We use :v1 because:
+- Clear version numbering
+- Easy to increment (v2, v3, etc.)
+- Good for learning
+- Explicit (not ambiguous like "latest")
+
+Image Tagging Doesn't Duplicate Data:
+--------------------------------------
+
+Before tagging:
+```
+Docker Storage:
+└─ Image b980bc5cb0b6 (238 MB)
+   └─ Tag: proj2-app:local
+```
+
+After tagging:
+```
+Docker Storage:
+└─ Image b980bc5cb0b6 (238 MB) ← Same image!
+   ├─ Tag: proj2-app:local
+   └─ Tag: 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+```
+
+Disk space used: Still 238 MB (not 476 MB!)
+
+Tags are just pointers/labels.
+
+Verify Tagging:
+---------------
+
+Command:
+--------
+docker images | grep proj2-app
+
+Output:
+-------
+501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1   b980bc5cb0b6   238MB
+proj2-app:local                                             b980bc5cb0b6   238MB
+
+Notice:
+- Both have same Image ID: b980bc5cb0b6
+- Both show same size: 238MB
+- They ARE the same image
+
+Columns explained:
+- Column 1: Repository name (tag)
+- Column 2: Image ID (unique identifier)
+- Column 3: Size (virtual size)
+
+What This Step Accomplished:
+-----------------------------
+
+✅ Tagged image with ECR-formatted name
+✅ Image now has two tags (local + ECR)
+✅ No disk space duplicated
+✅ Ready to push to ECR
+
+
+3.4 PUSH IMAGE TO ECR
+----------------------
+
+Command:
+--------
+docker push 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+
+What This Command Does:
+------------------------
+Uploads your Docker image from your Mac to AWS ECR.
+
+This is the main event - moving your image to the cloud!
+
+What Happens During Push:
+--------------------------
+
+The push process is complex but efficient. Let me explain step by step.
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Step 1: Docker analyzes the image                         │
+│                                                            │
+│ Docker looks at image: b980bc5cb0b6                        │
+│                                                            │
+│ Image consists of 10 layers:                              │
+│ 1. d637807aba98 (base Debian layer) - 30 MB              │
+│ 2. 518abaec573a (system libraries) - 40 MB               │
+│ 3. 9421d1bcd181 (Python) - 80 MB                         │
+│ 4. f0508df556c7 (pip) - 20 MB                            │
+│ 5. 011b8926bbc8 (Python libraries) - 50 MB               │
+│ 6. c4d8221ae6b7 (WORKDIR setup) - 1 KB                   │
+│ 7. 068949646e5a (requirements.txt) - 100 bytes           │
+│ 8. d67bedf18e0a (pip install flask/gunicorn) - 30 MB    │
+│ 9. 113d5f5d9b3d (app.py) - 2 KB                          │
+│ 10. 44a16040c643 (user creation) - 5 KB                   │
+│                                                            │
+│ Total uncompressed: 238 MB                                 │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 2: Check which layers ECR already has                │
+│                                                            │
+│ Docker asks ECR: "Do you have these layer digests?"       │
+│                                                            │
+│ Request:                                                   │
+│ GET /v2/proj2-app/blobs/sha256:d637807aba98              │
+│ GET /v2/proj2-app/blobs/sha256:518abaec573a              │
+│ ... (for all 10 layers)                                    │
+│                                                            │
+│ ECR responds for each:                                     │
+│ - Layer 1-6: 200 OK (already exist - from base image)     │
+│ - Layer 7-10: 404 Not Found (need to upload)              │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 3: Upload only missing layers                        │
+│                                                            │
+│ Docker only uploads layers 7-10:                          │
+│                                                            │
+│ Layer 7: 068949646e5a (requirements.txt)                  │
+│ - Compress: 100 bytes → 90 bytes (gzip)                  │
+│ - Upload: POST /v2/proj2-app/blobs/uploads/               │
+│ - Status: ████████████████████████████ 100%              │
+│                                                            │
+│ Layer 8: d67bedf18e0a (Flask/gunicorn)                    │
+│ - Compress: 30 MB → 10 MB (gzip)                         │
+│ - Upload: POST /v2/proj2-app/blobs/uploads/               │
+│ - Status: ████████████████████████████ 100%              │
+│                                                            │
+│ Layer 9: 113d5f5d9b3d (app.py)                            │
+│ - Compress: 2 KB → 1 KB (gzip)                           │
+│ - Upload: POST /v2/proj2-app/blobs/uploads/               │
+│ - Status: ████████████████████████████ 100%              │
+│                                                            │
+│ Layer 10: 44a16040c643 (user creation)                    │
+│ - Compress: 5 KB → 2 KB (gzip)                           │
+│ - Upload: POST /v2/proj2-app/blobs/uploads/               │
+│ - Status: ████████████████████████████ 100%              │
+│                                                            │
+│ Total uploaded: ~10 MB (not 238 MB!)                      │
+│ Time: ~30-60 seconds (depending on internet speed)        │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 4: Create image manifest                             │
+│                                                            │
+│ Docker creates a manifest (metadata) describing image:    │
+│                                                            │
+│ {                                                          │
+│   "schemaVersion": 2,                                      │
+│   "mediaType": "application/vnd.docker.distribution...",  │
+│   "config": {                                              │
+│     "digest": "sha256:282918ab5acfc987abe63f8d...",      │
+│     "size": 7234                                           │
+│   },                                                       │
+│   "layers": [                                              │
+│     {"digest": "sha256:d637807aba98...", "size": ...},   │
+│     {"digest": "sha256:518abaec573a...", "size": ...},   │
+│     {"digest": "sha256:9421d1bcd181...", "size": ...},   │
+│     ... (all 10 layers)                                    │
+│   ]                                                        │
+│ }                                                          │
+│                                                            │
+│ Upload manifest:                                           │
+│ PUT /v2/proj2-app/manifests/v1                            │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 5: Create tag reference                              │
+│                                                            │
+│ ECR creates tag "v1" pointing to manifest digest          │
+│                                                            │
+│ Tag: v1                                                    │
+│   → Manifest digest: sha256:b980bc5cb0b6a19c420891f...   │
+│       → Layer 1: sha256:d637807aba98...                   │
+│       → Layer 2: sha256:518abaec573a...                   │
+│       → ... (all layers)                                   │
+└──────────────────┬─────────────────────────────────────────┘
+                   │
+                   ▼
+┌────────────────────────────────────────────────────────────┐
+│ Step 6: Success response                                  │
+│                                                            │
+│ ECR responds:                                              │
+│   HTTP 201 Created                                         │
+│   Location: ...manifests/sha256:b980bc5cb0b6a...         │
+│                                                            │
+│ Docker prints:                                             │
+│   v1: digest: sha256:b980bc5cb0b6... size: 856           │
+└────────────────────────────────────────────────────────────┘
+```
+
+Output You See:
+---------------
+
+During push:
+```
+The push refers to repository [501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app]
+44a16040c643: Pushing [==============>                    ] 2.5KB/5KB
+113d5f5d9b3d: Pushing [==================>                ] 1KB/2KB
+d67bedf18e0a: Pushing [======>                            ] 3MB/10MB
+068949646e5a: Pushing [==========================>        ] 90/100
+c4d8221ae6b7: Layer already exists
+011b8926bbc8: Layer already exists
+f0508df556c7: Layer already exists
+9421d1bcd181: Layer already exists
+518abaec573a: Layer already exists
+d637807aba98: Layer already exists
+```
+
+After push completes:
+```
+44a16040c643: Pushed
+113d5f5d9b3d: Pushed
+d67bedf18e0a: Pushed
+068949646e5a: Pushed
+c4d8221ae6b7: Pushed
+011b8926bbc8: Pushed
+f0508df556c7: Pushed
+9421d1bcd181: Pushed
+518abaec573a: Pushed
+d637807aba98: Pushed
+v1: digest: sha256:b980bc5cb0b6a19c420891f73a254df33f43676ea1aaa8a369ab910f0d0c9781 size: 856
+```
+
+Understanding the Output:
+--------------------------
+
+"Layer already exists":
+-----------------------
+These layers are from the python:3.11-slim base image.
+
+ECR already has them because:
+- Many images use the same base
+- ECR doesn't store duplicates
+- Saves storage space
+- Faster push (skip uploading)
+
+"Pushed":
+---------
+These layers were uploaded.
+
+Why some layers uploaded:
+- Unique to your application
+- Not in ECR yet
+- Required for your image
+
+Progress bar:
+-------------
+[================>                    ] 5MB/10MB
+
+Shows:
+- How much uploaded
+- Total size
+- Progress percentage
+
+Final line:
+-----------
+v1: digest: sha256:b980bc5cb0b6a19c... size: 856
+
+What each part means:
+- v1: The tag
+- digest: Unique identifier for this exact image
+- size: 856 bytes (size of manifest, not image!)
+
+Layer Deduplication (Why It's Fast):
+-------------------------------------
+
+Scenario 1: First push to ECR
+------------------------------
+- Upload all layers: 238 MB (compressed: ~70 MB)
+- Time: 2-5 minutes (depending on internet)
+
+Scenario 2: Second push (changed app.py)
+-----------------------------------------
+- Only layer 9 changed (app.py)
+- Upload: 1 layer (~1 KB)
+- Time: 5 seconds!
+
+Scenario 3: Another app using python:3.11-slim
+-----------------------------------------------
+- Layers 1-6 already in ECR
+- Only upload application layers
+- Saves time and storage
+
+Image Compression:
+------------------
+
+Docker compresses layers during upload.
+
+Example:
+- Uncompressed layer: 30 MB
+- Compressed (gzip): 10 MB
+- Uploaded: 10 MB
+- Stored in ECR: 10 MB (compressed)
+- When pulled: Extracted to 30 MB
+
+Compression ratio: Typically 2-3x
+
+Benefits:
+- Faster uploads
+- Cheaper storage
+- Faster downloads
+
+What This Step Accomplished:
+-----------------------------
+
+✅ Image uploaded to ECR
+✅ All layers pushed (or reused if existing)
+✅ Manifest created
+✅ Tag "v1" assigned
+✅ Image digest generated
+✅ Ready for ECS to pull
+
+
+3.5 VERIFY IMAGE IN ECR
+------------------------
+
+After pushing, we verify the image exists in ECR.
+
+Command 1: Describe Images
+---------------------------
+aws ecr describe-images --repository-name proj2-app --region us-east-1
+
+What it does:
+Lists all images in the repository.
+
+Output:
+-------
+```json
+{
+    "imageDetails": [
+        {
+            "registryId": "501894534533",
+            "repositoryName": "proj2-app",
+            "imageDigest": "sha256:b2b366f100b62bde51bfc7d1b7003dd55e15c8f119087d9b38e78b99bf9f4334",
+            "imageSizeInBytes": 51778165,
+            "imagePushedAt": "2026-01-16T17:25:41.097000-06:00",
+            "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactMediaType": "application/vnd.oci.image.config.v1+json"
+        },
+        {
+            "registryId": "501894534533",
+            "repositoryName": "proj2-app",
+            "imageDigest": "sha256:46969f23df08becc79a8d5df80641ffedf0c1ca9585672043d95edc9e7c71427",
+            "imageSizeInBytes": 1167,
+            "imagePushedAt": "2026-01-16T17:25:41.101000-06:00",
+            "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json",
+            "artifactMediaType": "application/vnd.oci.image.config.v1+json"
+        },
+        {
+            "registryId": "501894534533",
+            "repositoryName": "proj2-app",
+            "imageDigest": "sha256:b980bc5cb0b6a19c420891f73a254df33f43676ea1aaa8a369ab910f0d0c9781",
+            "imageTags": [
+                "v1"
+            ],
+            "imageSizeInBytes": 51778165,
+            "imagePushedAt": "2026-01-16T17:25:41.493000-06:00",
+            "imageManifestMediaType": "application/vnd.oci.image.index.v1+json"
+        }
+    ]
+}
+```
+
+Why multiple entries?
+----------------------
+
+ECR stores multiple artifacts for one image:
+
+Entry 1: Image manifest
+------------------------
+- Digest: sha256:b2b366f100b...
+- Size: 51,778,165 bytes (~51.7 MB)
+- Type: OCI image manifest
+- Contains: List of layers for one architecture (ARM64)
+
+Entry 2: Attestation (security metadata)
+-----------------------------------------
+- Digest: sha256:46969f23df08...
+- Size: 1,167 bytes
+- Type: Attestation manifest
+- Contains: Security/provenance information
+
+Entry 3: Multi-arch index (the tagged image)
+---------------------------------------------
+- Digest: sha256:b980bc5cb0b6a...
+- Size: 51,778,165 bytes
+- Tags: ["v1"]
+- Type: OCI image index
+- Contains: References to manifests for all architectures
+
+This is the one we care about!
+
+Field Breakdown:
+----------------
+
+imageTags:
+----------
+"imageTags": ["v1"]
+
+The tag(s) for this image.
+
+One image can have multiple tags:
+- ["v1", "latest"]
+- ["v1.0.0", "production"]
+
+imageDigest:
+------------
+"imageDigest": "sha256:b980bc5cb0b6a19c420891f73a254df33f43676ea1aaa8a369ab910f0d0c9781"
+
+Unique identifier for this exact image.
+
+Format: sha256:<64 hex characters>
+
+Properties:
+- Cryptographic hash (SHA-256)
+- Content-addressable
+- Changes if image changes
+- Used for: Pulling specific versions, security, audit
+
+Example:
+If you rebuild image with same tag "v1":
+- Tag "v1" points to new digest
+- Old digest still exists (untagged)
+- Can still pull old digest if needed
+
+imageSizeInBytes:
+-----------------
+"imageSizeInBytes": 51778165
+
+Size: 51,778,165 bytes = 51.7 MB
+
+This is the COMPRESSED size.
+
+Compressed vs Uncompressed:
+- Compressed (stored in ECR): 51.7 MB
+- Uncompressed (on disk when running): 238 MB
+
+Why compressed?
+- Faster downloads
+- Cheaper storage
+- Network efficiency
+
+imagePushedAt:
+--------------
+"imagePushedAt": "2026-01-16T17:25:41.493000-06:00"
+
+Timestamp when image was pushed.
+
+Format: ISO 8601
+- Date: 2026-01-16
+- Time: 17:25:41
+- Timezone: -06:00 (CST)
+
+Command 2: Formatted Output
+----------------------------
+aws ecr describe-images \
+  --repository-name proj2-app \
+  --image-ids imageTag=v1 \
+  --region us-east-1 \
+  --query 'imageDetails[0].{Tag:imageTags[0],Size:imageSizeInBytes,Pushed:imagePushedAt}' \
+  --output table
+
+Output:
+-------
+```
+---------------------------------------------------------
+|                    DescribeImages                     |
++-----------------------------------+-----------+-------+
+|              Pushed               |   Size    |  Tag  |
++-----------------------------------+-----------+-------+
+|  2026-01-16T17:25:41.493000-06:00 |  51778165 |  v1   |
++-----------------------------------+-----------+-------+
+```
+
+Much easier to read!
+
+What we see:
+- Tag: v1
+- Size: 51,778,165 bytes (51.7 MB)
+- Pushed: 2026-01-16 at 17:25:41
+
+Verification Checklist:
+-----------------------
+
+✅ Image has tag "v1"
+✅ Size is reasonable (51.7 MB compressed)
+✅ Push timestamp is recent
+✅ Image digest exists
+✅ No errors in output
+
+Screenshot Time:
+----------------
+
+📸 Go to AWS Console:
+1. Navigate to ECR service
+2. Click "proj2-app" repository
+3. See image with tag "v1"
+4. See size: 51.7 MB
+5. See pushed timestamp
+6. Take screenshot!
+
+This screenshot proves:
+- Image successfully uploaded
+- Available in AWS
+- Ready for ECS to use
+
+What This Phase Accomplished:
+------------------------------
+
+✅ ECR repository created
+✅ Docker authenticated to ECR
+✅ Image tagged with ECR URI
+✅ Image pushed to AWS (51.7 MB)
+✅ Image verified in ECR
+✅ Tag "v1" assigned
+✅ Ready for Phase D (Infrastructure)
+
+Your image is now in the cloud!
+
+
+================================================================================
+4. TECHNICAL DEEP DIVES
+================================================================================
+
+4.1 HOW ECR WORKS
+-----------------
+
+ECR Architecture:
+-----------------
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Your AWS Account: 501894534533                            │
+│                                                            │
+│ ┌────────────────────────────────────────────────────────┐ │
+│ │ ECR Service (us-east-1)                                │ │
+│ │                                                        │ │
+│ │ ┌────────────────────────────────────────────────────┐ │ │
+│ │ │ Registry:                                          │ │ │
+│ │ │ 501894534533.dkr.ecr.us-east-1.amazonaws.com      │ │ │
+│ │ │                                                    │ │ │
+│ │ │ ┌────────────────────────────────────────────────┐ │ │ │
+│ │ │ │ Repository: proj2-app                          │ │ │ │
+│ │ │ │                                                │ │ │ │
+│ │ │ │ Images:                                        │ │ │ │
+│ │ │ │ ├─ v1 (sha256:b980bc5c...)                    │ │ │ │
+│ │ │ │ ├─ v2 (future)                                 │ │ │ │
+│ │ │ │ └─ latest (future)                             │ │ │ │
+│ │ │ │                                                │ │ │ │
+│ │ │ │ Layers (shared):                               │ │ │ │
+│ │ │ │ ├─ sha256:d637807... (Debian base)            │ │ │ │
+│ │ │ │ ├─ sha256:518abae... (system libs)            │ │ │ │
+│ │ │ │ ├─ sha256:9421d1b... (Python)                 │ │ │ │
+│ │ │ │ ├─ sha256:f0508df... (pip)                    │ │ │ │
+│ │ │ │ ├─ sha256:011b892... (Python libs)            │ │ │ │
+│ │ │ │ ├─ sha256:c4d8221... (WORKDIR)                │ │ │ │
+│ │ │ │ ├─ sha256:068949... (requirements.txt)        │ │ │ │
+│ │ │ │ ├─ sha256:d67bedf... (Flask/gunicorn)         │ │ │ │
+│ │ │ │ ├─ sha256:113d5f5... (app.py)                 │ │ │ │
+│ │ │ │ └─ sha256:44a1604... (user)                   │ │ │ │
+│ │ │ └────────────────────────────────────────────────┘ │ │ │
+│ │ │                                                    │ │ │
+│ │ │ ┌────────────────────────────────────────────────┐ │ │ │
+│ │ │ │ Repository: another-app (if you had one)       │ │ │ │
+│ │ │ │ Images: ...                                    │ │ │ │
+│ │ │ └────────────────────────────────────────────────┘ │ │ │
+│ │ └────────────────────────────────────────────────────┘ │ │
+│ └──────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────┘
+```
+
+ECR Components:
+---------------
+
+Component 1: Registry
+---------------------
+- One per AWS account per region
+- URL: <account-id>.dkr.ecr.<region>.amazonaws.com
+- Contains: All your repositories in that region
+- Private: Only your account can access (by default)
+
+Component 2: Repository
+-----------------------
+- Collection of related images
+- Naming: Typically one per application
+- Scope: Per registry (region-specific)
+- Example: proj2-app, proj2-database, proj2-frontend
+
+Component 3: Image
+------------------
+- Specific version of containerized application
+- Identified by: Tag and/or digest
+- Contains: Manifest + layers
+- Immutable: Once pushed, content cannot change
+
+Component 4: Layer
+------------------
+- One filesystem change (from Dockerfile instruction)
+- Stored: Once (even if used by multiple images)
+- Content-addressable: Identified by SHA-256 hash
+- Immutable: Cannot be changed
+
+Component 5: Manifest
+---------------------
+- JSON document describing image
+- Lists: All layers and their digests
+- Metadata: Architecture, OS, config
+- Signed: Cryptographically verified
+
+Component 6: Tag
+----------------
+- Human-readable label (v1, latest, production)
+- Mutable: Can be reassigned to different image
+- Optional: Images can exist without tags
+- Convention: Semantic versioning
+
+ECR API Endpoints:
+------------------
+
+Docker uses these endpoints:
+
+1. Authentication
+-----------------
+POST /token
+- Get authentication token
+- Duration: 12 hours
+- Required for all other operations
+
+2. Check Layer Exists
+---------------------
+HEAD /v2/<repo>/blobs/sha256:<digest>
+- Response: 200 (exists) or 404 (doesn't exist)
+- Used during push to avoid uploading existing layers
+
+3. Upload Layer
+---------------
+POST /v2/<repo>/blobs/uploads/
+PUT /v2/<repo>/blobs/uploads/<uuid>
+- Multi-step process
+- Chunked upload supported
+- Verified by digest
+
+4. Upload Manifest
+------------------
+PUT /v2/<repo>/manifests/<tag>
+- Final step in push
+- Links tag to manifest digest
+- Atomic operation
+
+5. Pull Manifest
+----------------
+GET /v2/<repo>/manifests/<tag>
+- Returns manifest JSON
+- Lists all layers to download
+
+6. Download Layer
+-----------------
+GET /v2/<repo>/blobs/sha256:<digest>
+- Download specific layer
+- Compressed data
+- Verified by digest
+
+ECR Storage:
+------------
+
+How ECR stores images:
+
+```
+S3 Backend (Encrypted):
+┌────────────────────────────────────────────────────────────┐
+│ Bucket: aws-ecr-<region>-<account-id>                      │
+│                                                            │
+│ ├─ blobs/                                                  │
+│ │  ├─ sha256/                                              │
+│ │  │  ├─ d637807aba98... (Debian layer)                   │
+│ │  │  ├─ 518abaec573a... (system libs)                    │
+│ │  │  ├─ 9421d1bcd181... (Python)                         │
+│ │  │  └─ ... (all layers)                                  │
+│ │                                                          │
+│ ├─ manifests/                                              │
+│ │  └─ proj2-app/                                           │
+│ │     └─ v1 → manifest-sha256:b980bc5c...                  │
+│ │                                                          │
+│ └─ tags/                                                   │
+│    └─ proj2-app/                                           │
+│       └─ v1 → sha256:b980bc5c...                           │
+└────────────────────────────────────────────────────────────┘
+```
+
+Storage properties:
+- Encrypted: AES-256 at rest
+- Deduplicated: Shared layers stored once
+- Compressed: gzip compression
+- Durable: 99.999999999% durability (11 9's)
+- Available: Highly available across AZs
+
+ECR Features:
+-------------
+
+Feature 1: Image Scanning
+--------------------------
+Types:
+- Basic scanning (free)
+- Enhanced scanning (paid - more comprehensive)
+
+What it scans:
+- OS packages (apt, yum, apk)
+- Language packages (pip, npm, gem, maven)
+- Known vulnerabilities (CVE database)
+
+When it scans:
+- On push (if enabled)
+- On demand
+- Continuous (enhanced scanning)
+
+Results:
+- Severity: CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL
+- CVE ID: CVE-2023-12345
+- Affected package: openssl-1.1.1
+- Fixed version: openssl-1.1.1w
+- Description: Buffer overflow vulnerability
+
+Feature 2: Lifecycle Policies
+------------------------------
+Purpose: Automatically delete old images to save costs.
+
+Policy types:
+- Age-based: Delete images older than 30 days
+- Count-based: Keep only last 10 images
+- Tagged: Keep tagged images, delete untagged
+- Complex: Multiple rules with priorities
+
+Example policy:
+```json
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Keep last 10 images",
+      "selection": {
+        "tagStatus": "any",
+        "countType": "imageCountMoreThan",
+        "countNumber": 10
+      },
+      "action": {
+        "type": "expire"
+      }
+    }
+  ]
+}
+```
+
+Feature 3: Cross-Region Replication
+------------------------------------
+Purpose: Copy images to other regions.
+
+Use cases:
+- Disaster recovery
+- Multi-region deployments
+- Reduce latency for global users
+
+Example:
+- Primary: us-east-1
+- Replicated to: us-west-2, eu-west-1
+- Automatic: On every push
+- Encrypted: In transit and at rest
+
+Feature 4: Image Immutability
+------------------------------
+Purpose: Prevent tag overwriting.
+
+When enabled:
+- Pushing image with existing tag fails
+- Forces new tags for new versions
+- Prevents accidental overwrites
+
+When to use:
+- Production repositories
+- Compliance requirements
+- Strict version control
+
+Feature 5: Repository Permissions
+----------------------------------
+Purpose: Control who can access repository.
+
+Permissions:
+- ecr:GetAuthorizationToken (required for all)
+- ecr:BatchGetImage (pull images)
+- ecr:PutImage (push images)
+- ecr:DescribeImages (list images)
+- ecr:DeleteRepository (delete repo)
+
+Cross-account access:
+- Resource policy on repository
+- Allows other AWS accounts to pull
+- Useful for sharing base images
+
+ECR Costs:
+----------
+
+Storage:
+--------
+$0.10 per GB-month
+
+Example:
+- Our image: 51.7 MB = 0.0517 GB
+- Cost: $0.0517 × $0.10 = $0.00517/month
+- Less than a cent!
+
+Data Transfer:
+--------------
+Out to internet: $0.09/GB
+Out to ECS (same region): FREE!
+Out to ECS (different region): $0.02/GB
+
+Example:
+- ECS pulls image (51.7 MB) in us-east-1
+- Cost: $0 (same region)
+
+- ECS pulls image (51.7 MB) in eu-west-1
+- Cost: 0.0517 × $0.02 = $0.001034 (~$0.001)
+
+Our monthly cost: ~$0.01 (one cent!)
+
+ECR vs Alternatives:
+--------------------
+
+| Feature | AWS ECR | Docker Hub | GitHub Container Registry |
+|---------|---------|------------|---------------------------|
+| Privacy | Private (default) | Public (default) | Private/Public |
+| Cost | $0.10/GB | Free tier: 1 repo | Free for public |
+| AWS Integration | Excellent | Good | Good |
+| Scanning | Yes (free) | Yes (paid) | Yes |
+| Speed from ECS | Fast (internal) | Slower (internet) | Slower (internet) |
+| Region-specific | Yes | No | No |
+
+For AWS deployments: ECR is best choice.
+
+
+4.2 HOW DOCKER IMAGE LAYERS WORK
+---------------------------------
+
+What Is a Layer?
+----------------
+
+A layer is one "change" to the filesystem.
+
+Each Dockerfile instruction that modifies the filesystem creates a layer:
+- RUN (executes commands)
+- COPY (copies files)
+- ADD (copies and extracts)
+- FROM (base image)
+
+Instructions that DON'T create layers:
+- ENV (sets environment variable - just metadata)
+- EXPOSE (documents ports - just metadata)
+- CMD (default command - just metadata)
+- WORKDIR (changes directory - creates layer but tiny)
+
+Our Image Layers:
+-----------------
+
+Dockerfile → Layers
+
+```
+FROM python:3.11-slim
+├─ Layer 1: Debian base OS
+├─ Layer 2: System libraries
+├─ Layer 3: Python 3.11
+├─ Layer 4: pip
+└─ Layer 5: Python standard libraries
+   (Layers 1-5 come from python:3.11-slim base image)
+
+WORKDIR /app
+└─ Layer 6: Create /app directory
+
+COPY requirements.txt .
+└─ Layer 7: Add requirements.txt file
+
+RUN pip install ...
+└─ Layer 8: Install Flask and gunicorn
+
+COPY app.py .
+└─ Layer 9: Add app.py file
+
+RUN useradd ...
+└─ Layer 10: Create appuser
+```
+
+Layer Stack (Bottom to Top):
+-----------------------------
+
+```
+┌─────────────────────────────────────┐ ← Layer 10: Create user (5 KB)
+├─────────────────────────────────────┤ ← Layer 9: Add app.py (2 KB)
+├─────────────────────────────────────┤ ← Layer 8: Install packages (30 MB)
+├─────────────────────────────────────┤ ← Layer 7: Add requirements.txt (100 B)
+├─────────────────────────────────────┤ ← Layer 6: Create /app dir (1 KB)
+├─────────────────────────────────────┤ ← Layer 5: Python libs (50 MB)
+├─────────────────────────────────────┤ ← Layer 4: pip (20 MB)
+├─────────────────────────────────────┤ ← Layer 3: Python (80 MB)
+├─────────────────────────────────────┤ ← Layer 2: System libs (40 MB)
+└─────────────────────────────────────┘ ← Layer 1: Debian base (30 MB)
+```
+
+Union Filesystem:
+-----------------
+
+Docker uses a "union mount" - all layers stacked to appear as one filesystem.
+
+When you run the container:
+```
+/ (root)
+├─ bin/        (from Layer 1)
+├─ lib/        (from Layer 2)
+├─ usr/
+│  └─ bin/
+│     └─ python (from Layer 3)
+├─ app/        (from Layer 6)
+│  ├─ requirements.txt (from Layer 7)
+│  └─ app.py   (from Layer 9)
+└─ home/
+   └─ appuser/ (from Layer 10)
+```
+
+Looks like one filesystem, but actually 10 layers stacked!
+
+Layer Immutability:
+-------------------
+
+Once created, layers NEVER change.
+
+Example:
+```
+RUN apt-get install package
+RUN apt-get remove package
+```
+
+This creates TWO layers:
+- Layer 1: +100 MB (package installed)
+- Layer 2: +0 MB (package removed, but Layer 1 still exists!)
+
+Final image size: 100 MB (not 0!)
+
+Best practice: Combine in one RUN:
+```
+RUN apt-get install package && \
+    do-something && \
+    apt-get remove package
+```
+
+One layer: +5 MB (only what's needed remains)
+
+Layer Caching:
+--------------
+
+Docker caches layers during build.
+
+Example Dockerfile:
+```dockerfile
+COPY requirements.txt .       ← Layer A
+RUN pip install -r requirements.txt  ← Layer B
+COPY app.py .                 ← Layer C
+```
+
+Build 1:
+- Layer A: Build (requirements.txt copied)
+- Layer B: Build (packages installed) - Takes 30 seconds
+- Layer C: Build (app.py copied)
+
+Change app.py, Build 2:
+- Layer A: Cached (requirements.txt unchanged)
+- Layer B: Cached (still valid)
+- Layer C: Rebuild (app.py changed)
+Time: 2 seconds!
+
+Change requirements.txt, Build 3:
+- Layer A: Rebuild (requirements.txt changed)
+- Layer B: Rebuild (depends on Layer A)
+- Layer C: Rebuild (depends on Layer B)
+Time: 35 seconds
+
+Order matters for caching!
+
+Layer Deduplication:
+--------------------
+
+Same layer used by multiple images is stored once.
+
+Example:
+
+Image 1 (proj2-app):
+```
+├─ Layers 1-5: python:3.11-slim (200 MB)
+├─ Layer 6-10: Application (38 MB)
+Total: 238 MB
+```
+
+Image 2 (another-app):
+```
+├─ Layers 1-5: python:3.11-slim (200 MB) ← SAME layers!
+├─ Layer 6-8: Different app (20 MB)
+Total: 220 MB
+```
+
+Disk usage:
+- If stored separately: 238 + 220 = 458 MB
+- With deduplication: 200 + 38 + 20 = 258 MB
+- Savings: 200 MB!
+
+This happens automatically in:
+- Local Docker storage
+- ECR
+- ECS task storage
+
+Content-Addressable Storage:
+-----------------------------
+
+Layers identified by SHA-256 hash of contents.
+
+Example:
+- Layer content: (Debian base files)
+- SHA-256 hash: d637807aba98f742a62ad9b0146579ceb0297a3c...
+- This IS the layer ID
+
+If two layers have same content:
+- They have same hash
+- Stored once
+- Shared between images
+
+If content changes even slightly:
+- Different hash
+- Different layer
+- Stored separately
+
+Layer Compression:
+------------------
+
+Layers are compressed for:
+- Storage (on disk)
+- Transfer (push/pull)
+
+Compression algorithm: gzip
+
+Example:
+- Uncompressed: 30 MB (text files, Python code)
+- Compressed: 10 MB
+- Ratio: 3:1
+
+Better compression for:
+- Text files
+- Source code
+- Repeated data
+
+Worse compression for:
+- Images (already compressed)
+- Videos
+- Compressed archives
+
+Layer Size Limits:
+------------------
+
+Docker Hub: No limit per layer
+ECR: No documented limit per layer
+Practical limit: ~5 GB per layer (performance)
+
+Best practice:
+- Keep layers small
+- Combine related operations
+- Clean up in same layer
+
+Example (bad):
+```dockerfile
+RUN apt-get update              ← Layer 1: 100 MB
+RUN apt-get install -y package  ← Layer 2: 200 MB
+RUN apt-get clean               ← Layer 3: 0 MB (doesn't help!)
+Total: 300 MB
+```
+
+Example (good):
+```dockerfile
+RUN apt-get update && \
+    apt-get install -y package && \
+    apt-get clean
+Total: 50 MB (cleaned up in same layer)
+```
+
+
+4.3 HOW DOCKER PUSH WORKS
+--------------------------
+
+The Docker Push Protocol:
+--------------------------
+
+Docker push uses the OCI Distribution Specification (formerly Docker Registry API v2).
+
+Phases:
+1. Authentication
+2. Check existing layers
+3. Upload missing layers
+4. Upload manifest
+5. Tag reference
+
+Phase 1: Authentication
+-----------------------
+
+Already done via: docker login
+
+Docker reads saved credentials from:
+~/.docker/config.json
+
+For each request, Docker includes:
+Authorization: Bearer <token>
+
+ECR validates token on each request.
+
+Phase 2: Check Existing Layers
+-------------------------------
+
+For each layer, Docker asks: "Do you have this?"
+
+```
+HEAD /v2/proj2-app/blobs/sha256:d637807aba98...
+Authorization: Bearer <token>
+
+Response:
+200 OK → Layer exists (skip upload)
+404 Not Found → Layer doesn't exist (need to upload)
+```
+
+This happens for ALL 10 layers.
+
+Results:
+- Layers 1-6: 200 OK (already in ECR)
+- Layers 7-10: 404 Not Found (need upload)
+
+Why check first?
+- Avoids uploading what's already there
+- Saves time (minutes to seconds)
+- Saves bandwidth
+
+Phase 3: Upload Missing Layers
+-------------------------------
+
+For each missing layer, Docker:
+
+Step 1: Initiate Upload
+```
+POST /v2/proj2-app/blobs/uploads/
+Authorization: Bearer <token>
+
+Response:
+202 Accepted
+Location: /v2/proj2-app/blobs/uploads/<uuid>
+```
+
+ECR allocates an upload session.
+
+Step 2: Upload Data (Chunked)
+```
+PATCH /v2/proj2-app/blobs/uploads/<uuid>
+Content-Type: application/octet-stream
+Content-Length: 10485760
+Content-Range: 0-10485759/30000000
+
+<chunk of layer data>
+
+Response:
+202 Accepted
+Range: 0-10485759
+```
+
+Docker can upload in chunks (10 MB at a time).
+
+Benefits:
+- Resume after network failures
+- Progress tracking
+- Better for large layers
+
+Step 3: Complete Upload
+```
+PUT /v2/proj2-app/blobs/uploads/<uuid>?digest=sha256:d67bedf18...
+Content-Length: 0
+
+Response:
+201 Created
+Location: /v2/proj2-app/blobs/sha256:d67bedf18...
+```
+
+ECR:
+1. Verifies SHA-256 matches uploaded data
+2. Marks upload complete
+3. Makes layer available
+
+Verification:
+If calculated SHA-256 ≠ provided SHA-256:
+- Upload rejected
+- Must retry
+
+This ensures integrity!
+
+Phase 4: Upload Manifest
+-------------------------
+
+After all layers uploaded, Docker sends manifest.
+
+Manifest contents:
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "size": 7234,
+    "digest": "sha256:282918ab5acfc987abe63f8d..."
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 31457280,
+      "digest": "sha256:d637807aba98..."
+    },
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 41943040,
+      "digest": "sha256:518abaec573a..."
+    },
+    ... (all 10 layers)
+  ]
+}
+```
+
+Upload manifest:
+```
+PUT /v2/proj2-app/manifests/v1
+Content-Type: application/vnd.docker.distribution.manifest.v2+json
+
+<manifest JSON>
+
+Response:
+201 Created
+Docker-Content-Digest: sha256:b980bc5cb0b6a...
+```
+
+ECR:
+1. Validates all layers exist
+2. Calculates manifest digest
+3. Stores manifest
+4. Creates tag reference
+
+Phase 5: Tag Reference
+-----------------------
+
+ECR creates tag "v1" pointing to manifest digest.
+
+```
+Tag Database:
+proj2-app/v1 → sha256:b980bc5cb0b6a19c420891f73a254df33f43676ea...
+```
+
+Now pulling "proj2-app:v1" returns this manifest.
+
+Atomic operation:
+- Tag update is atomic
+- No partial states
+- Safe concurrent pushes
+
+Push Completion:
+----------------
+
+Docker prints:
+```
+v1: digest: sha256:b980bc5cb0b6... size: 856
+```
+
+Meaning:
+- Tag: v1
+- Manifest digest: sha256:b980bc5c...
+- Manifest size: 856 bytes
+
+Success!
+
+Error Handling:
+---------------
+
+Common errors during push:
+
+Error 1: Unauthorized
+---------------------
+```
+Error response from daemon: unauthorized: authentication required
+```
+
+Cause: Token expired (> 12 hours old)
+Solution: Re-run docker login
+
+Error 2: Access Denied
+----------------------
+```
+Error response from daemon: denied: Your authorization token has expired
+```
+
+Cause: Token valid but expired mid-push
+Solution: Re-run docker login and push again
+
+Error 3: Repository Not Found
+------------------------------
+```
+Error response from daemon: repository not found
+```
+
+Cause: Repository doesn't exist in ECR
+Solution: Create repository first (aws ecr create-repository)
+
+Error 4: Digest Mismatch
+-------------------------
+```
+Error response from daemon: blob upload invalid: provided digest doesn't match
+```
+
+Cause: Data corruption during upload
+Solution: Retry push (Docker will re-upload)
+
+Error 5: Quota Exceeded
+------------------------
+```
+Error response from daemon: denied: storage quota exceeded
+```
+
+Cause: Too many images in account
+Solution: Delete old images or request quota increase
+
+Multi-Architecture Images:
+--------------------------
+
+Advanced topic: One tag, multiple architectures.
+
+Example: python:3.11-slim
+- ARM64 manifest (for Apple Silicon)
+- AMD64 manifest (for Intel/AMD)
+- Manifest list (index) points to both
+
+When you pull:
+- Docker detects your architecture
+- Pulls correct manifest
+- Downloads appropriate layers
+
+Our image:
+- Built on Apple Silicon (ARM64)
+- Contains ARM64 manifest
+- Could build AMD64 variant separately
+- Could create manifest list (both architectures)
+
+
+4.4 IMAGE SCANNING AND SECURITY
+--------------------------------
+
+What Is Image Scanning?
+------------------------
+
+Image scanning analyzes container images for:
+- Known security vulnerabilities (CVEs)
+- Outdated packages
+- Malware
+- Configuration issues
+- Secrets embedded in images
+
+Why scan?
+- Containers run in production
+- Vulnerabilities can be exploited
+- Compliance requirements
+- Best practice for security
+
+ECR Image Scanning:
+-------------------
+
+ECR offers two types:
+
+Type 1: Basic Scanning
+-----------------------
+Technology: Clair (open source)
+Cost: FREE
+Scans: On push (if enabled) or manual
+Coverage: OS packages only
+
+What it checks:
+- apt packages (Debian/Ubuntu)
+- yum packages (RHEL/CentOS)
+- apk packages (Alpine)
+
+What it finds:
+- CVEs (Common Vulnerabilities and Exposures)
+- Severity: CRITICAL, HIGH, MEDIUM, LOW
+
+Type 2: Enhanced Scanning
+--------------------------
+Technology: Amazon Inspector
+Cost: $0.01 per image scan
+Scans: Continuous (re-scans daily)
+Coverage: OS + language packages
+
+What it checks:
+- Everything in basic scanning
+- Python packages (pip)
+- Node.js packages (npm)
+- Java packages (maven, gradle)
+- Ruby packages (gem)
+- Go modules
+
+We use basic scanning (free and sufficient for learning).
+
+Scan Results:
+-------------
+
+After push, scan takes 1-2 minutes.
+
+View in AWS Console:
+1. Go to ECR
+2. Click proj2-app
+3. Click image
+4. See "Scan findings" tab
+
+Example findings:
+```
+Severity: HIGH
+CVE: CVE-2023-12345
+Package: openssl-1.1.1k
+Affected versions: < 1.1.1w
+Fixed version: 1.1.1w
+Description: Buffer overflow vulnerability allows remote code execution
+CVSS Score: 7.5
+```
+
+Field explanations:
+- CVE: Unique ID for vulnerability
+- Package: Which software has the issue
+- Affected versions: Which versions are vulnerable
+- Fixed version: Version that fixes it
+- Description: What the vulnerability is
+- CVSS Score: 0-10 (10 = most severe)
+
+Severity Levels:
+----------------
+
+CRITICAL (CVSS 9.0-10.0):
+- Remote code execution
+- Complete system compromise
+- Active exploits in the wild
+- Action: Fix immediately
+
+HIGH (CVSS 7.0-8.9):
+- Significant security impact
+- Privilege escalation
+- Information disclosure
+- Action: Fix soon (days)
+
+MEDIUM (CVSS 4.0-6.9):
+- Moderate impact
+- Requires specific conditions
+- Less likely to be exploited
+- Action: Fix in next release
+
+LOW (CVSS 0.1-3.9):
+- Minimal impact
+- Hard to exploit
+- Low risk
+- Action: Fix when convenient
+
+INFORMATIONAL:
+- Not a vulnerability
+- Configuration recommendations
+- Best practices
+- Action: Consider implementing
+
+Fixing Vulnerabilities:
+-----------------------
+
+Option 1: Update Base Image
+----------------------------
+Most vulnerabilities are in base image.
+
+Solution:
+```dockerfile
+FROM python:3.11-slim
+```
+
+Change to newer version:
+```dockerfile
+FROM python:3.11.7-slim
+```
+
+Rebuild and push:
+```bash
+docker build -t proj2-app:v2 ./app
+docker tag proj2-app:v2 <ecr-uri>/proj2-app:v2
+docker push <ecr-uri>/proj2-app:v2
+```
+
+Option 2: Update Packages
+--------------------------
+Vulnerability in installed package.
+
+Solution:
+```dockerfile
+RUN pip install flask==3.0.0
+```
+
+Update to patched version:
+```dockerfile
+RUN pip install flask==3.0.3
+```
+
+Option 3: Use Minimal Base Images
+----------------------------------
+Fewer packages = fewer vulnerabilities.
+
+Options:
+- python:3.11-slim (we use this) - 180 MB
+- python:3.11-alpine - 50 MB (fewer packages)
+- Distroless - 20 MB (minimal, no shell)
+
+Trade-off:
+- Smaller = more secure
+- But harder to debug (no shell tools)
+
+Option 4: Scan Locally
+----------------------
+Scan before pushing to ECR.
+
+Tools:
+- Trivy (open source)
+- Snyk
+- Grype
+
+Example with Trivy:
+```bash
+trivy image proj2-app:local
+```
+
+Fix vulnerabilities locally, then push clean image.
+
+Security Best Practices:
+------------------------
+
+Practice 1: Don't Run as Root
+------------------------------
+We already do this!
+
+```dockerfile
+RUN useradd appuser
+USER appuser
+```
+
+Why: If container compromised, attacker has limited privileges.
+
+Practice 2: No Secrets in Images
+---------------------------------
+NEVER do this:
+```dockerfile
+ENV DATABASE_PASSWORD=mysecret123
+```
+
+Instead:
+- Use environment variables (pass at runtime)
+- Use AWS Secrets Manager
+- Use AWS Systems Manager Parameter Store
+
+Practice 3: Minimal Images
+---------------------------
+Only install what's needed.
+
+Bad:
+```dockerfile
+RUN apt-get install -y python3 nginx mysql-server redis vim curl
+```
+
+Good:
+```dockerfile
+RUN apt-get install -y python3-pip
+```
+
+Practice 4: Multi-Stage Builds
+-------------------------------
+Build in one stage, copy to minimal image.
+
+Example:
+```dockerfile
+# Build stage
+FROM python:3.11 AS builder
+COPY requirements.txt .
+RUN pip install --user -r requirements.txt
+
+# Runtime stage
+FROM python:3.11-slim
+COPY --from=builder /root/.local /root/.local
+COPY app.py .
+```
+
+Result: Smaller final image (no build tools).
+
+Practice 5: Scan Regularly
+---------------------------
+New vulnerabilities discovered daily.
+
+Action:
+- Scan images regularly (weekly/monthly)
+- Re-scan after CVE announcements
+- Keep base images updated
+
+Practice 6: Use Official Base Images
+-------------------------------------
+Prefer:
+- python:3.11-slim (official Python image)
+
+Avoid:
+- random-user/python-custom (untrusted)
+
+Official images:
+- Maintained by companies/communities
+- Regular security updates
+- Documented build process
+
+Compliance:
+-----------
+
+Some industries require:
+- Scan all images before production
+- No CRITICAL vulnerabilities
+- Documented remediation process
+- Audit trail of scans
+
+ECR helps with:
+- Automatic scanning
+- Scan history
+- Integration with AWS Security Hub
+- Compliance reporting
+
+
+================================================================================
+5. UNDERSTANDING IMAGE TAGS AND MANIFESTS
+================================================================================
+
+What Is an Image Tag?
+---------------------
+
+A tag is a label for an image, like:
+- v1
+- latest
+- production
+- 2026-01-16
+
+Format: <repository>:<tag>
+- proj2-app:v1
+- nginx:latest
+- ubuntu:22.04
+
+Multiple Tags for One Image:
+-----------------------------
+
+One image can have many tags:
+
+```
+Image: sha256:b980bc5c...
+├─ proj2-app:v1
+├─ proj2-app:latest
+└─ proj2-app:production
+```
+
+All three tags point to the same image!
+
+Use case:
+- v1: Specific version
+- latest: Most recent
+- production: Currently deployed
+
+Tag Mutability:
+---------------
+
+Mutable tags (default):
+- Can be reassigned
+- v1 today ≠ v1 tomorrow (potentially)
+
+Example:
+```
+Day 1: v1 → Image A
+Day 2: Push new image with tag v1
+       v1 → Image B (overwrote)
+```
+
+Immutable tags:
+- Cannot be reassigned
+- v1 always points to same image
+
+Example:
+```
+Day 1: v1 → Image A
+Day 2: Push new image with tag v1
+       Error: tag already exists!
+```
+
+We use mutable (more flexible for learning).
+
+What Is a Digest?
+-----------------
+
+A digest is a cryptographic hash (SHA-256) of the image manifest.
+
+Format: sha256:<64 hex characters>
+Example: sha256:b980bc5cb0b6a19c420891f73a254df33f43676ea1aaa8a369ab910f0d0c9781
+
+Properties:
+- Unique: Different content = different digest
+- Immutable: Content never changes
+- Verifiable: Can recalculate and verify
+
+Digest vs Tag:
+--------------
+
+| Aspect | Tag | Digest |
+|--------|-----|--------|
+| Format | Human-readable (v1) | Hash (sha256:b980...) |
+| Uniqueness | Not guaranteed | Guaranteed unique |
+| Mutability | Can change | Immutable |
+| Use case | Convenience | Exact version |
+
+Pulling by digest:
+```bash
+docker pull <ecr-uri>/proj2-app@sha256:b980bc5c...
+```
+
+Guarantees: Exact same image every time.
+
+Pulling by tag:
+```bash
+docker pull <ecr-uri>/proj2-app:v1
+```
+
+Gets: Whatever v1 points to (could change).
+
+What Is a Manifest?
+-------------------
+
+A manifest is a JSON document describing an image.
+
+Types:
+1. Image manifest (our image)
+2. Manifest list (multi-arch images)
+
+Our Image Manifest:
+-------------------
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+  "config": {
+    "mediaType": "application/vnd.docker.container.image.v1+json",
+    "size": 7234,
+    "digest": "sha256:282918ab5acfc987abe63f8d0357b1a80581f32e64c4db1ab57f4fa7c45b817f"
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 31457280,
+      "digest": "sha256:d637807aba98f742a62ad9b0146579ceb0297a3c831f56b2361664b7f5fbc75b"
+    },
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 41943040,
+      "digest": "sha256:518abaec573aacfc293edf9e19b26274fc7ee5d3448e80f90eecdae829acd7e7"
+    },
+    ... (8 more layers)
+  ]
+}
+```
+
+Fields:
+
+schemaVersion: 2
+- Manifest format version
+- Version 2 is current standard
+
+config:
+- Image configuration blob
+- Contains: CMD, ENV, WORKDIR, etc.
+- Size: 7234 bytes
+- Digest: SHA-256 of config
+
+layers:
+- Array of layers (bottom to top)
+- Each layer: size + digest
+- Digest: SHA-256 of compressed layer data
+- Media type: Usually tar.gzip
+
+Manifest Digest:
+----------------
+
+The manifest digest is SHA-256 of this JSON.
+
+Calculate:
+```
+SHA256(manifest JSON) = sha256:b980bc5c...
+```
+
+This becomes the image digest!
+
+Why manifests matter:
+---------------------
+
+1. Content-addressable storage
+   - Find image by digest
+   - Verify integrity
+
+2. Layer sharing
+   - Identify duplicate layers
+   - Deduplicate storage
+
+3. Security
+   - Signed manifests (Docker Content Trust)
+   - Verify authenticity
+
+4. Multi-architecture
+   - Manifest list points to multiple manifests
+   - Docker picks correct architecture
+
+Manifest List (Multi-Arch):
+----------------------------
+
+For images supporting multiple architectures:
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+  "manifests": [
+    {
+      "digest": "sha256:abc123...",
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      }
+    },
+    {
+      "digest": "sha256:def456...",
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    }
+  ]
+}
+```
+
+When you pull:
+1. Docker detects your platform (arm64, amd64, etc.)
+2. Selects matching manifest
+3. Downloads that version
+
+Our image:
+- Built on Apple Silicon (ARM64)
+- Has only ARM64 manifest
+- Would fail on AMD64 without multi-arch build
+
+
+================================================================================
+6. TROUBLESHOOTING COMMON ISSUES
+================================================================================
+
+Issue 1: Authentication Expired
+--------------------------------
+
+Error:
+```
+Error response from daemon: unauthorized: authentication token expired
+```
+
+Cause:
+Token expired (> 12 hours since login).
+
+Solution:
+```bash
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin \
+  501894534533.dkr.ecr.us-east-1.amazonaws.com
+```
+
+Prevention:
+Run docker login at start of each session.
+
+
+Issue 2: Repository Not Found
+------------------------------
+
+Error:
+```
+Error response from daemon: repository proj2-app not found
+```
+
+Cause:
+Repository doesn't exist or wrong name.
+
+Solution:
+```bash
+# List repositories
+aws ecr describe-repositories
+
+# Create if missing
+aws ecr create-repository --repository-name proj2-app
+```
+
+
+Issue 3: Access Denied
+-----------------------
+
+Error:
+```
+Error response from daemon: denied: User: arn:aws:iam::... is not authorized
+to perform: ecr:PutImage
+```
+
+Cause:
+IAM user lacks ECR permissions.
+
+Solution:
+Attach policy with ECR permissions:
+- ecr:GetAuthorizationToken
+- ecr:PutImage
+- ecr:InitiateLayerUpload
+- ecr:UploadLayerPart
+- ecr:CompleteLayerUpload
+- ecr:BatchCheckLayerAvailability
+
+Or use: AdministratorAccess (we have this).
+
+
+Issue 4: Image Not Found Locally
+---------------------------------
+
+Error:
+```
+Error response from daemon: No such image: proj2-app:local
+```
+
+Cause:
+Image not built or wrong tag.
+
+Solution:
+```bash
+# List images
+docker images
+
+# Rebuild if needed
+docker build -t proj2-app:local ./app
+```
+
+
+Issue 5: Slow Push
+-------------------
+
+Symptom:
+Push takes > 10 minutes.
+
+Causes:
+
+Cause A: Large image
+Solution: Optimize Dockerfile, use multi-stage builds
+
+Cause B: Slow internet
+Solution: Wait or use faster connection
+
+Cause C: All layers uploading (should be cached)
+Solution: Base image changed, expected first time
+
+
+Issue 6: Digest Mismatch
+-------------------------
+
+Error:
+```
+Error response from daemon: blob upload invalid: provided digest doesn't match
+```
+
+Cause:
+Data corruption during upload.
+
+Solution:
+Retry push - Docker will re-upload corrupt layers.
+
+If persists:
+Check Docker installation, reinstall if needed.
+
+
+Issue 7: Tag Already Exists (Immutable)
+----------------------------------------
+
+Error:
+```
+Error response from daemon: tag already exists
+```
+
+Cause:
+Repository has image immutability enabled.
+
+Solution:
+Use different tag:
+```bash
+docker tag proj2-app:local <ecr-uri>/proj2-app:v2
+docker push <ecr-uri>/proj2-app:v2
+```
+
+Or disable immutability (not recommended for production).
+
+
+Issue 8: Wrong Region
+----------------------
+
+Error:
+```
+Error response from daemon: repository does not exist in registry
+```
+
+Cause:
+Pushing to wrong region.
+
+Solution:
+Verify region in ECR URI:
+```
+501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app
+                      ^^^^^^^^^ Must match repository region
+```
+
+Check:
+```bash
+aws ecr describe-repositories --region us-east-1
+```
+
+
+Issue 9: Rate Limiting
+-----------------------
+
+Error:
+```
+Error response from daemon: too many requests
+```
+
+Cause:
+Too many concurrent pushes.
+
+Solution:
+Wait a few seconds and retry.
+
+Prevention:
+Space out pushes if pushing many images.
+
+
+Issue 10: Insufficient Storage
+-------------------------------
+
+Error:
+```
+Error response from daemon: insufficient storage
+```
+
+Cause:
+Mac disk full.
+
+Solution:
+```bash
+# Check disk space
+df -h
+
+# Clean up Docker
+docker system prune -a
+
+# Remove unused images
+docker images
+docker rmi <image-id>
+```
+
+
+================================================================================
+7. SUMMARY AND NEXT STEPS
+================================================================================
+
+What We Accomplished in Phase C:
+---------------------------------
+
+✅ Created ECR repository (proj2-app)
+✅ Enabled automatic vulnerability scanning
+✅ Authenticated Docker to ECR (12-hour token)
+✅ Tagged local image with ECR URI format
+✅ Pushed image to AWS ECR
+   - Only uploaded missing layers (efficient)
+   - Compressed during transfer (51.7 MB)
+   - Verified integrity with SHA-256
+✅ Verified image in ECR
+   - Tag: v1
+   - Digest: sha256:b980bc5c...
+   - Size: 51.7 MB compressed
+✅ Image ready for ECS to pull
+
+Skills Learned:
+---------------
+1. ECR repository creation
+2. Docker authentication to AWS
+3. Image tagging strategies
+4. Docker push protocol
+5. Layer deduplication
+6. Image manifests and digests
+7. Vulnerability scanning
+8. ECR vs other registries
+
+Key Concepts:
+-------------
+- ECR repository vs registry
+- Image layers and content-addressable storage
+- Tags vs digests (mutable vs immutable)
+- Manifest structure
+- Layer caching and deduplication
+- Compression and transfer optimization
+- Image scanning for security
+
+Files Created:
+--------------
+None! Everything happened in AWS cloud via Docker commands.
+
+AWS Resources Created:
+----------------------
+- ECR Repository: proj2-app (in us-east-1)
+- Docker Image: proj2-app:v1 (51.7 MB compressed)
+
+Cost Summary:
+-------------
+- Storage: 51.7 MB × $0.10/GB = $0.00517/month
+- Data transfer: $0 (same-region ECS pulls are free)
+- Total: < $0.01/month
+
+Questions to Understand:
+------------------------
+1. What's the difference between a tag and a digest?
+   → Tag is mutable label (v1), digest is immutable hash (sha256:...)
+
+2. Why does pushing only take 30 seconds instead of uploading 238 MB?
+   → Layer deduplication - base image layers already in ECR
+
+3. What happens if I push a new image with tag "v1"?
+   → Overwrites the tag (with mutable repos), v1 now points to new image
+
+4. Where is my Docker image stored in AWS?
+   → ECR service, backed by encrypted S3 storage
+
+5. How does ECS get my image?
+   → ECS task definition specifies ECR image URI, ECS pulls on task start
+
+Next Steps (Phase D):
+---------------------
+Now that our image is in ECR, we'll create the infrastructure to run it:
+
+1. Terraform VPC
+   - Create virtual private cloud
+   - 2 public subnets across 2 availability zones
+   - Internet gateway for connectivity
+
+2. Security Groups
+   - ALB security group (allow port 80 from internet)
+   - ECS security group (allow port 8080 from ALB only)
+
+3. Application Load Balancer
+   - Distribute traffic across ECS tasks
+   - Health checks on /health endpoint
+   - Public DNS endpoint
+
+4. Target Group
+   - Register ECS tasks as targets
+   - Route traffic from ALB to containers
+
+Phase D will build the network foundation for Phase E (ECS deployment).
+
+The Journey So Far:
+-------------------
+
+Phase A: Created Flask app and Docker image locally
+Phase B: Verified AWS access and set up cost protection
+Phase C: Pushed image to AWS ECR ← You are here
+Phase D: Create infrastructure with Terraform (next)
+Phase E: Deploy to ECS Fargate
+Phase F: Verify logs in CloudWatch
+Phase G: Set up monitoring and alarms
+Phase H: Final verification and teardown
+
+Progress: 37.5% complete (3 of 8 phases)
+
+================================================================================
+END OF PHASE C EXPLANATION
+================================================================================

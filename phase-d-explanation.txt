@@ -1,0 +1,2259 @@
+================================================================================
+PHASE D: TERRAFORM VPC + ALB INFRASTRUCTURE - DETAILED EXPLANATION
+================================================================================
+
+This document provides a comprehensive, beginner-friendly explanation of Phase D,
+where we provisioned AWS network infrastructure using Terraform.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. Introduction to Infrastructure as Code (IaC)
+2. What is Terraform?
+3. AWS Networking Fundamentals
+4. The Infrastructure We Built
+5. File-by-File Breakdown
+6. The Terraform Workflow
+7. What Was Created in AWS
+8. Testing and Verification
+9. Key Concepts Summary
+10. Common Issues and Solutions
+
+================================================================================
+1. INTRODUCTION TO INFRASTRUCTURE AS CODE (IaC)
+================================================================================
+
+What is Infrastructure as Code?
+-------------------------------
+Infrastructure as Code (IaC) is the practice of managing and provisioning
+infrastructure through machine-readable definition files, rather than manual
+processes or interactive configuration tools.
+
+Traditional Approach (Manual):
+- Log into AWS Console
+- Click through menus to create VPC
+- Click to create subnets, one by one
+- Configure security groups manually
+- Set up load balancer through UI
+- Document what you did (maybe)
+- Hard to reproduce exactly
+- Error-prone for complex setups
+
+IaC Approach (Automated):
+- Write configuration files describing desired infrastructure
+- Version control these files (git)
+- Execute a single command to create everything
+- Perfectly reproducible
+- Easy to modify and update
+- Self-documenting
+- Can be reviewed before execution
+
+Benefits of IaC:
+----------------
+1. **Repeatability**: Create identical environments (dev, staging, prod)
+2. **Version Control**: Track changes over time, rollback if needed
+3. **Documentation**: The code IS the documentation
+4. **Testing**: Preview changes before applying them
+5. **Collaboration**: Multiple people can work on infrastructure
+6. **Speed**: Deploy complex infrastructure in minutes
+7. **Consistency**: Eliminate human error from manual steps
+
+Why This Matters for Your Project:
+-----------------------------------
+Instead of spending hours clicking through the AWS Console and potentially
+making mistakes, we define our entire network infrastructure in code files.
+If we need to recreate this environment, or create a second one, or update
+it, we just modify the code and run a command.
+
+This is the professional way to manage cloud infrastructure and is a critical
+skill for DevOps, Cloud Engineering, and Site Reliability Engineering roles.
+
+================================================================================
+2. WHAT IS TERRAFORM?
+================================================================================
+
+Terraform Basics
+----------------
+Terraform is an open-source Infrastructure as Code tool created by HashiCorp.
+It allows you to define infrastructure in human-readable configuration files
+and manages the lifecycle of that infrastructure.
+
+Key Terraform Concepts:
+-----------------------
+
+1. **Declarative Syntax**
+   - You declare WHAT you want, not HOW to create it
+   - Example: "I want a VPC with CIDR 10.0.0.0/16"
+   - Terraform figures out the API calls needed
+
+2. **Providers**
+   - Plugins that allow Terraform to interact with cloud platforms
+   - We use the AWS provider to create AWS resources
+   - Each provider knows how to talk to its platform's API
+
+3. **Resources**
+   - The fundamental building blocks in Terraform
+   - Each resource block describes one infrastructure object
+   - Example: aws_vpc, aws_subnet, aws_lb
+
+4. **State**
+   - Terraform tracks what it has created in a state file
+   - Knows the difference between desired state (your code) and current state (what exists)
+   - Uses this to determine what changes to make
+
+5. **Plan**
+   - Preview of what Terraform will do
+   - Shows additions, changes, and deletions
+   - No actual changes until you approve
+
+6. **Apply**
+   - Executes the plan and makes actual changes
+   - Creates, updates, or destroys resources
+   - Updates the state file
+
+Terraform vs CloudFormation vs AWS CDK:
+----------------------------------------
+- **Terraform**: Cloud-agnostic, works with AWS/Azure/GCP/etc., large community
+- **CloudFormation**: AWS-only, native AWS service, JSON/YAML syntax
+- **AWS CDK**: AWS-only, uses programming languages (Python, TypeScript), generates CloudFormation
+
+We chose Terraform because:
+- Industry standard tool
+- Great for learning (used across many companies)
+- Cloud-agnostic skills are transferable
+- Excellent documentation and community
+
+Terraform File Structure:
+-------------------------
+Terraform configuration files use the .tf extension and are written in
+HashiCorp Configuration Language (HCL).
+
+Typical organization:
+- main.tf: Provider configuration, locals
+- variables.tf: Input variables (parameterization)
+- outputs.tf: Values to display after creation
+- [resource].tf: Resources grouped by purpose (vpc.tf, alb.tf, etc.)
+
+All .tf files in a directory are loaded together, so naming is for human
+organization, not functional requirements.
+
+================================================================================
+3. AWS NETWORKING FUNDAMENTALS
+================================================================================
+
+Before diving into what we built, let's understand the networking concepts:
+
+VPC (Virtual Private Cloud)
+----------------------------
+**What it is:**
+A VPC is your own isolated section of the AWS cloud where you launch resources.
+Think of it as your own private data center in AWS.
+
+**Why we need it:**
+- Isolation: Your resources are separate from other AWS customers
+- Control: You define the IP address range, subnets, routing
+- Security: You control what can talk to what
+
+**CIDR Block:**
+CIDR (Classless Inter-Domain Routing) defines the IP address range.
+Example: 10.0.0.0/16
+
+Breaking down 10.0.0.0/16:
+- 10.0.0.0 is the network address
+- /16 means the first 16 bits are the network portion
+- Remaining 16 bits are for hosts
+- Total IP addresses: 2^(32-16) = 2^16 = 65,536 addresses
+- Range: 10.0.0.0 to 10.0.255.255
+
+Why 10.0.0.0/16?
+- 10.x.x.x is a private IP range (not routable on internet)
+- /16 gives us plenty of addresses for subnets
+- Common convention for VPCs
+
+Subnets
+-------
+**What they are:**
+Subdivisions of your VPC. Each subnet exists in ONE availability zone.
+
+**Our configuration:**
+- Subnet 1: 10.0.1.0/24 in us-east-1a (256 addresses)
+- Subnet 2: 10.0.2.0/24 in us-east-1b (256 addresses)
+
+**Why we have two subnets:**
+- Application Load Balancers require subnets in at least 2 availability zones
+- High availability: If one AZ fails, traffic can still flow
+- Best practice: Distribute resources across AZs
+
+**Public vs Private Subnets:**
+
+Public Subnet:
+- Has a route to an Internet Gateway
+- Resources can get public IP addresses
+- Can directly access the internet
+- Used for: Load balancers, NAT Gateways, bastion hosts
+
+Private Subnet:
+- No direct route to Internet Gateway
+- Uses NAT Gateway for outbound internet access
+- More secure for application servers
+- Used for: Application servers, databases
+
+Our Decision:
+We're using PUBLIC subnets for simplicity (no NAT Gateway costs).
+Our ECS tasks will get public IPs and can directly access the internet
+for pulling images from ECR.
+
+Availability Zones (AZs)
+-------------------------
+**What they are:**
+Physically separate data centers within a region, with independent power,
+cooling, and networking.
+
+**Why they matter:**
+- Fault tolerance: Failure in one AZ doesn't affect others
+- High availability: Distribute resources across AZs
+- Compliance: Some regulations require multi-AZ deployment
+
+**Our AZs:**
+- us-east-1a: First availability zone in North Virginia region
+- us-east-1b: Second availability zone in North Virginia region
+
+Internet Gateway (IGW)
+----------------------
+**What it is:**
+A horizontally scaled, redundant, and highly available VPC component that
+allows communication between your VPC and the internet.
+
+**How it works:**
+1. Your instance sends traffic destined for internet (e.g., 8.8.8.8)
+2. Traffic goes through subnet's route table
+3. Route table says "0.0.0.0/0 (all internet traffic) → Internet Gateway"
+4. IGW performs NAT (Network Address Translation)
+5. Replaces instance's private IP with its public IP
+6. Sends traffic to internet
+
+**Why we need it:**
+- Without IGW, resources in VPC can't reach internet
+- ECS tasks need internet to pull images from ECR
+- ALB needs internet to receive user requests
+
+Route Tables
+------------
+**What they are:**
+Sets of rules (routes) that determine where network traffic is directed.
+
+**Our public route table has two routes:**
+
+Route 1 (Local):
+- Destination: 10.0.0.0/16
+- Target: local
+- Meaning: Traffic for any IP in our VPC stays in the VPC
+- Automatically created
+
+Route 2 (Internet):
+- Destination: 0.0.0.0/0 (all other traffic)
+- Target: Internet Gateway
+- Meaning: All other traffic goes to the internet via IGW
+- We explicitly create this
+
+**Route Table Association:**
+We associate our public route table with both public subnets.
+This makes them "public" - any instance in these subnets can reach the
+internet via the IGW.
+
+Security Groups
+---------------
+**What they are:**
+Virtual firewalls that control inbound and outbound traffic for AWS resources.
+They operate at the instance/resource level (not subnet level).
+
+**Key Characteristics:**
+- Stateful: If you allow inbound, the response is automatically allowed out
+- Default deny: Everything is blocked unless you explicitly allow it
+- Allow rules only: You can't create deny rules (use NACLs for that)
+- Can reference other security groups
+
+**Our Security Groups:**
+
+1. ALB Security Group (alb-sg):
+   Purpose: Protect the Application Load Balancer
+
+   Inbound Rules:
+   - Port 80 (HTTP) from 0.0.0.0/0 (anywhere)
+   - Why: Anyone on internet should access our web app
+
+   Outbound Rules:
+   - All traffic to 0.0.0.0/0
+   - Why: ALB needs to send traffic to ECS tasks
+
+2. ECS Security Group (ecs-sg):
+   Purpose: Protect ECS tasks (containers)
+
+   Inbound Rules:
+   - Port 8080 from alb-sg ONLY
+   - Why: Only the ALB should reach containers, not direct internet access
+   - Security by isolation: Even though tasks are in public subnets,
+     they're protected by only allowing ALB traffic
+
+   Outbound Rules:
+   - Port 443 (HTTPS) to 0.0.0.0/0
+     Why: Pull images from ECR (uses HTTPS)
+   - Port 80 (HTTP) to 0.0.0.0/0
+     Why: General connectivity needs
+
+**Security Group vs NACL:**
+- Security Groups: Stateful, resource-level, allow rules only
+- NACLs: Stateless, subnet-level, allow and deny rules
+- We use Security Groups (most common for application security)
+
+Application Load Balancer (ALB)
+--------------------------------
+**What it is:**
+A managed AWS service that distributes incoming application traffic across
+multiple targets (like ECS tasks) in multiple availability zones.
+
+**Why we need it:**
+1. Single entry point: One DNS name for users to access
+2. High availability: Distributes across multiple containers
+3. Health checks: Automatically removes unhealthy containers
+4. Automatic scaling: Works with ECS to add/remove containers
+5. SSL termination: Can handle HTTPS (though we're using HTTP only)
+
+**How ALB works:**
+
+Internet → ALB → Target Group → Healthy Targets (ECS Tasks)
+
+1. User requests http://our-alb-dns-name.amazonaws.com/
+2. DNS resolves to ALB's public IP
+3. Request hits ALB listener (port 80)
+4. Listener forwards to target group
+5. Target group checks which targets are healthy
+6. ALB sends request to a healthy target
+7. Target (ECS task) processes request
+8. Response goes back through ALB to user
+
+**ALB Components:**
+
+1. Load Balancer:
+   - The main resource
+   - Has a DNS name (proj2-alb-830302272.us-east-1.elb.amazonaws.com)
+   - Exists in multiple AZs for high availability
+   - Has security group attached
+
+2. Listener:
+   - Checks for connection requests
+   - Configured with protocol and port (HTTP:80)
+   - Has rules for routing traffic
+
+3. Target Group:
+   - Logical grouping of targets (our ECS tasks)
+   - Defines health check configuration
+   - Type: "ip" (required for Fargate)
+
+4. Targets:
+   - The actual resources receiving traffic
+   - For us: IP addresses of ECS tasks
+   - Will be registered by ECS service (in Phase E)
+
+**Health Checks:**
+The ALB periodically sends requests to targets to check if they're healthy.
+
+Our configuration:
+- Path: /health
+- Interval: 30 seconds (checks every 30s)
+- Timeout: 5 seconds (wait up to 5s for response)
+- Healthy threshold: 2 (need 2 consecutive successes)
+- Unhealthy threshold: 3 (need 3 consecutive failures)
+- Matcher: 200 (expect HTTP 200 OK response)
+
+Why this matters:
+If a container crashes or becomes unresponsive, the health check fails.
+After 3 failures, ALB stops sending traffic to that container.
+ECS will restart the container, and after 2 successful health checks,
+ALB resumes sending traffic to it.
+
+**Target Type: IP vs Instance:**
+- Instance: For EC2 instances, traffic goes to instance's primary IP
+- IP: For Fargate, containers get their own IPs
+- We use IP because Fargate doesn't use EC2 instances
+
+Network Traffic Flow
+--------------------
+Let's trace a request from user to container:
+
+1. User types: http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+
+2. DNS Resolution:
+   - Browser looks up DNS name
+   - Gets ALB's public IP: 98.94.200.88
+
+3. Request Enters AWS:
+   - Hits ALB in our public subnet
+   - ALB security group checks: Is port 80 from internet allowed? YES
+
+4. ALB Processing:
+   - Listener on port 80 receives request
+   - Forwards to target group proj2-tg
+   - Target group checks healthy targets (will be ECS task IPs in Phase E)
+
+5. To ECS Task:
+   - ALB sends request to ECS task's private IP on port 8080
+   - ECS security group checks: Is port 8080 from alb-sg allowed? YES
+   - Request reaches container
+
+6. Container Processing:
+   - Gunicorn receives request
+   - Flask app processes it
+   - Returns JSON response
+
+7. Response Path:
+   - Container → ECS security group (stateful, allows response)
+   - → ALB
+   - → ALB security group (stateful, allows response)
+   - → Internet Gateway
+   - → User's browser
+
+Important: Security groups are STATEFUL. This means we don't need explicit
+outbound rules for responses. If inbound is allowed, the response is
+automatically allowed out.
+
+================================================================================
+4. THE INFRASTRUCTURE WE BUILT
+================================================================================
+
+Architecture Overview
+---------------------
+In Phase D, we created the foundational network infrastructure:
+
+┌─────────────────────────────────────────────────────────────────┐
+│                          AWS Cloud                               │
+│                         Region: us-east-1                        │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                  VPC (10.0.0.0/16)                         │ │
+│  │                                                            │ │
+│  │  ┌──────────────────┐          ┌──────────────────┐      │ │
+│  │  │ Public Subnet 1  │          │ Public Subnet 2  │      │ │
+│  │  │  10.0.1.0/24     │          │  10.0.2.0/24     │      │ │
+│  │  │   us-east-1a     │          │   us-east-1b     │      │ │
+│  │  │                  │          │                  │      │ │
+│  │  │  ┌────────────┐  │          │  ┌────────────┐  │      │ │
+│  │  │  │    ALB     │◄─┼──────────┼─►│    ALB     │  │      │ │
+│  │  │  │   Node     │  │          │  │   Node     │  │      │ │
+│  │  │  └────────────┘  │          │  └────────────┘  │      │ │
+│  │  │                  │          │                  │      │ │
+│  │  │  (ECS tasks      │          │  (ECS tasks      │      │ │
+│  │  │   will go here   │          │   will go here   │      │ │
+│  │  │   in Phase E)    │          │   in Phase E)    │      │ │
+│  │  └──────────────────┘          └──────────────────┘      │ │
+│  │            │                            │                 │ │
+│  │            └────────────┬───────────────┘                 │ │
+│  │                         │                                 │ │
+│  │                    ┌────▼────┐                           │ │
+│  │                    │   IGW   │                           │ │
+│  │                    └────┬────┘                           │ │
+│  └─────────────────────────┼──────────────────────────────── │
+│                            │                                 │
+└────────────────────────────┼─────────────────────────────────┘
+                             │
+                        ┌────▼────┐
+                        │ Internet│
+                        └─────────┘
+
+Resources Created:
+------------------
+1. VPC (vpc-025c70216bd21e55c)
+2. Internet Gateway (igw-098d93a0e9c7effaa)
+3. Public Subnet 1 (subnet-08c639441bfefbed5) in us-east-1a
+4. Public Subnet 2 (subnet-0f8cae1cf0464c070) in us-east-1b
+5. Public Route Table (rtb-03a9e65e2e7fc2f73)
+6. Route Table Association for Subnet 1
+7. Route Table Association for Subnet 2
+8. ALB Security Group (sg-08111206409a97f83)
+9. ECS Security Group (sg-0681b6ec6a3187236)
+10. Application Load Balancer (arn:...proj2-alb/e84726ce8b86ae60)
+11. Target Group (arn:...proj2-tg/3b66aac7debb06a7)
+12. ALB Listener (listening on port 80)
+
+Total: 12 AWS resources
+
+What's Still Missing:
+---------------------
+- ECS Cluster (Phase E)
+- ECS Task Definition (Phase E)
+- ECS Service (Phase E)
+- IAM Roles for ECS (Phase E)
+- CloudWatch Log Group (Phase E)
+- CloudWatch Alarms (Phase G)
+- CloudWatch Dashboard (Phase G)
+
+================================================================================
+5. FILE-BY-FILE BREAKDOWN
+================================================================================
+
+Let's go through each Terraform file we created and understand its purpose
+and contents.
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/main.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Provider configuration and common settings
+
+Content Breakdown:
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+```
+- Specifies minimum Terraform version needed
+- Ensures features we use are available
+- If someone has Terraform 1.4.x, they'll get an error
+- We use 1.5+ features (though basic ones would work in older versions)
+
+```hcl
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+```
+- Declares which provider plugins to download
+- source: Where to get the provider (HashiCorp's registry)
+- version: "~> 5.0" means "5.x.x but not 6.0.0"
+  - Will use 5.0, 5.1, 5.99, etc.
+  - Won't use 6.0 (breaking changes)
+  - This is called "pessimistic version constraint"
+
+```hcl
+provider "aws" {
+  region = var.aws_region
+```
+- Configures the AWS provider
+- region: Which AWS region to create resources in
+- var.aws_region references a variable (defined in variables.tf)
+- Will be us-east-1
+
+```hcl
+  default_tags {
+    tags = local.common_tags
+  }
+}
+```
+- Automatically applies tags to ALL resources
+- Tags are key-value pairs for organization
+- Benefits: Cost tracking, resource management, automation
+- local.common_tags is defined below
+
+```hcl
+locals {
+  common_tags = {
+    Project     = "proj2"
+    Environment = "dev"
+    ManagedBy   = "terraform"
+  }
+}
+```
+- locals block defines local values (like variables within this module)
+- common_tags: Map of tags applied to all resources
+- Project: For grouping related resources
+- Environment: dev/staging/prod distinction
+- ManagedBy: Indicates this was created by Terraform (vs manual)
+
+Why This File Matters:
+- Central configuration point
+- Single place to update provider version
+- Consistent tagging across all resources
+- Region can be changed in one place
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/variables.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Parameterize the infrastructure (make it reusable and configurable)
+
+Why Variables?
+- Without variables: Hard-coded values everywhere
+- With variables: Change one value to modify entire infrastructure
+- Enables: Multiple environments, reusability, cleaner code
+
+Content Breakdown:
+
+```hcl
+variable "aws_region" {
+  description = "AWS region for all resources"
+  type        = string
+  default     = "us-east-1"
+}
+```
+- description: Human-readable explanation
+- type: Data type (string, number, bool, list, map, object)
+- default: Used if no value provided
+- Can be overridden with: terraform.tfvars, -var flag, environment variables
+
+```hcl
+variable "aws_account_id" {
+  description = "AWS account ID for ECR repository"
+  type        = string
+  default     = "501894534533"
+}
+```
+- Your AWS account number
+- Will be used in Phase E for ECR image URL
+- Format: 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+
+```hcl
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+```
+- IP range for our VPC
+- 10.0.0.0/16 = 65,536 IP addresses
+- Could change to 172.16.0.0/16 or 192.168.0.0/16
+
+```hcl
+variable "public_subnet_cidrs" {
+  description = "CIDR blocks for public subnets"
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+```
+- type: list(string) - array of strings
+- First subnet: 10.0.1.0/24 (256 IPs)
+- Second subnet: 10.0.2.0/24 (256 IPs)
+- Could add more: ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+
+```hcl
+variable "availability_zones" {
+  description = "Availability zones for subnets"
+  type        = list(string)
+  default     = ["us-east-1a", "us-east-1b"]
+}
+```
+- Maps to subnet CIDRs (first subnet → first AZ)
+- Must have at least 2 for ALB
+- Could use ["us-east-1a", "us-east-1b", "us-east-1c"] for 3 subnets
+
+```hcl
+variable "container_port" {
+  description = "Port exposed by the Docker container"
+  type        = number
+  default     = 8080
+}
+```
+- Port our Flask app listens on
+- Used in: ECS task definition, security group, target group
+- If we changed app to port 5000, update this one variable
+
+```hcl
+variable "container_cpu" {
+  description = "Fargate CPU units (256 = 0.25 vCPU)"
+  type        = number
+  default     = 256
+}
+
+variable "container_memory" {
+  description = "Fargate memory in MB"
+  type        = number
+  default     = 512
+}
+```
+- Fargate task sizing
+- CPU: 256 units = 0.25 vCPU (smallest Fargate size)
+- Memory: 512 MB
+- Valid combinations for Fargate: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
+- Examples: 256 CPU → 512/1024/2048 MB memory
+
+```hcl
+variable "task_count" {
+  description = "Number of ECS tasks to run"
+  type        = number
+  default     = 1
+}
+```
+- How many containers to run
+- Default: 1 (for cost savings during development)
+- Production: Might use 2+ for high availability
+- Can be changed later without recreating infrastructure
+
+```hcl
+variable "ecr_repository_name" {
+  description = "Name of the ECR repository"
+  type        = string
+  default     = "proj2-app"
+}
+
+variable "image_tag" {
+  description = "Docker image tag to deploy"
+  type        = string
+  default     = "v1"
+}
+```
+- ECR repo name and image tag
+- Full image URL will be: 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+- To deploy new version: Change image_tag to "v2", apply
+
+Variable Best Practices:
+- Always provide descriptions
+- Use appropriate types
+- Provide sensible defaults
+- Document valid values/ranges
+- Group related variables together
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/outputs.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Display useful information after Terraform creates resources
+
+Why Outputs?
+- Get important values (like ALB DNS name)
+- Use in scripts or automation
+- Pass to other Terraform modules
+- Display summary of what was created
+
+Content Breakdown:
+
+```hcl
+output "alb_dns_name" {
+  description = "DNS name of the Application Load Balancer"
+  value       = aws_lb.proj2_alb.dns_name
+}
+```
+- Shows ALB's DNS name: proj2-alb-830302272.us-east-1.elb.amazonaws.com
+- This is how users access the application
+- aws_lb.proj2_alb: References the ALB resource
+- .dns_name: Attribute of the resource (provided by AWS)
+
+```hcl
+output "alb_url" {
+  description = "Full URL to access the application"
+  value       = "http://${aws_lb.proj2_alb.dns_name}"
+}
+```
+- Constructs full URL: http://proj2-alb-830302272.us-east-1.elb.amazonaws.com
+- String interpolation: ${...} embeds expressions
+- Convenient for copy-paste into browser
+
+```hcl
+output "vpc_id" {
+  description = "ID of the VPC"
+  value       = aws_vpc.proj2_vpc.id
+}
+```
+- VPC ID: vpc-025c70216bd21e55c
+- Useful for: Debugging, console navigation, scripts
+
+```hcl
+output "public_subnet_ids" {
+  description = "IDs of the public subnets"
+  value       = aws_subnet.public[*].id
+}
+```
+- Returns list of subnet IDs
+- [*] is "splat operator" - gets all elements
+- Output: ["subnet-08c639441bfefbed5", "subnet-0f8cae1cf0464c070"]
+
+```hcl
+output "alb_security_group_id" {
+  description = "ID of the ALB security group"
+  value       = aws_security_group.alb_sg.id
+}
+
+output "ecs_security_group_id" {
+  description = "ID of the ECS tasks security group"
+  value       = aws_security_group.ecs_sg.id
+}
+```
+- Security group IDs for reference
+- Useful if you need to modify rules later
+- Can be used by other Terraform modules
+
+```hcl
+output "alb_target_group_arn" {
+  description = "ARN of the ALB target group"
+  value       = aws_lb_target_group.proj2_tg.arn
+}
+```
+- ARN (Amazon Resource Name) uniquely identifies the target group
+- Will be used in Phase E when ECS service registers tasks
+
+How to Use Outputs:
+- View after apply: Automatically displayed
+- Query specific output: terraform output alb_dns_name
+- Get JSON format: terraform output -json
+- Use in scripts: ALB_URL=$(terraform output -raw alb_url)
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/vpc.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Define VPC, subnets, Internet Gateway, and routing
+
+Content Breakdown:
+
+VPC Resource:
+```hcl
+resource "aws_vpc" "proj2_vpc" {
+```
+- resource: Terraform keyword for infrastructure object
+- "aws_vpc": Resource type (from AWS provider)
+- "proj2_vpc": Local name (how we reference it)
+
+```hcl
+  cidr_block           = var.vpc_cidr
+```
+- Sets IP range: 10.0.0.0/16
+- Uses variable for flexibility
+
+```hcl
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+```
+- enable_dns_hostnames: Instances get DNS hostnames
+  - Example: ip-10-0-1-45.ec2.internal
+  - Required for some AWS services
+- enable_dns_support: VPC supports DNS resolution
+  - Allows instances to resolve DNS names
+
+```hcl
+  tags = {
+    Name = "proj2-vpc"
+  }
+```
+- Name tag appears in AWS Console
+- Additional tags from default_tags (Project, Environment, ManagedBy)
+
+Internet Gateway:
+```hcl
+resource "aws_internet_gateway" "proj2_igw" {
+  vpc_id = aws_vpc.proj2_vpc.id
+```
+- Creates IGW and attaches to VPC
+- vpc_id: References the VPC we created above
+- aws_vpc.proj2_vpc.id: Gets the ID attribute
+
+Public Subnets:
+```hcl
+resource "aws_subnet" "public" {
+  count = length(var.public_subnet_cidrs)
+```
+- count: Create multiple resources (meta-argument)
+- length(): Built-in function, counts list elements
+- Creates 2 subnets (length of ["10.0.1.0/24", "10.0.2.0/24"])
+
+```hcl
+  vpc_id                  = aws_vpc.proj2_vpc.id
+  cidr_block              = var.public_subnet_cidrs[count.index]
+  availability_zone       = var.availability_zones[count.index]
+```
+- count.index: Current iteration (0, 1, 2, ...)
+- First iteration (0):
+  - cidr_block = "10.0.1.0/24"
+  - availability_zone = "us-east-1a"
+- Second iteration (1):
+  - cidr_block = "10.0.2.0/24"
+  - availability_zone = "us-east-1b"
+
+```hcl
+  map_public_ip_on_launch = true
+```
+- Instances launched in this subnet automatically get public IPs
+- Critical for our ECS tasks to access internet
+
+```hcl
+  tags = {
+    Name = "proj2-public-subnet-${count.index + 1}"
+    Type = "public"
+  }
+```
+- count.index + 1: Makes names "subnet-1" and "subnet-2" (not 0 and 1)
+- Type tag: Categorizes subnet as public
+
+Route Table:
+```hcl
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.proj2_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.proj2_igw.id
+  }
+```
+- Creates route table with one explicit route
+- 0.0.0.0/0: All internet traffic (default route)
+- gateway_id: Send to Internet Gateway
+- Local route (10.0.0.0/16) is automatic
+
+Route Table Associations:
+```hcl
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+```
+- Associates route table with each subnet
+- count: Matches number of subnets (2)
+- Makes subnets "public" by giving them internet route
+
+Why This Structure?
+- Modular: Easy to add more subnets
+- Parameterized: Change CIDRs/AZs via variables
+- Clear: Each resource has one responsibility
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/security.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Define security groups for ALB and ECS tasks
+
+Content Breakdown:
+
+ALB Security Group:
+```hcl
+resource "aws_security_group" "alb_sg" {
+  name        = "proj2-alb-sg"
+  description = "Security group for ALB - allows HTTP from internet"
+  vpc_id      = aws_vpc.proj2_vpc.id
+```
+- name: Appears in AWS Console
+- description: Documents purpose
+- vpc_id: Security groups are VPC-specific
+
+Ingress Rule (Inbound):
+```hcl
+  ingress {
+    description = "HTTP from internet"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+```
+- ingress: Inbound traffic rules
+- from_port/to_port: Port range (80 to 80 = just port 80)
+- protocol: tcp (HTTP uses TCP)
+- cidr_blocks: Source IP ranges
+  - 0.0.0.0/0 = anywhere on the internet
+  - This is PUBLIC access (required for web app)
+
+Egress Rule (Outbound):
+```hcl
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+```
+- egress: Outbound traffic rules
+- from_port/to_port: 0 to 0 with protocol -1 means "all ports"
+- protocol: "-1" means all protocols (TCP, UDP, ICMP, etc.)
+- cidr_blocks: Destination (anywhere)
+- Why allow all outbound? ALB needs to reach ECS tasks
+
+ECS Security Group:
+```hcl
+resource "aws_security_group" "ecs_sg" {
+  name        = "proj2-ecs-sg"
+  description = "Security group for ECS tasks - allows traffic from ALB only"
+  vpc_id      = aws_vpc.proj2_vpc.id
+```
+
+Ingress Rule (from ALB only):
+```hcl
+  ingress {
+    description     = "Container port from ALB"
+    from_port       = var.container_port
+    to_port         = var.container_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+```
+- from_port/to_port: 8080 (our container port)
+- security_groups: Instead of CIDR, reference another SG
+- Meaning: Only resources with alb_sg can access port 8080
+- This is security group chaining (best practice)
+
+Egress Rules:
+```hcl
+  egress {
+    description = "HTTPS for ECR and CloudWatch"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "HTTP for general connectivity"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+```
+- Port 443: Pull images from ECR, send logs to CloudWatch
+- Port 80: HTTP connectivity
+- Best practice: Only allow needed ports
+- Could be more restrictive with VPC endpoints
+
+Security Group Dependencies:
+- alb_sg created first
+- ecs_sg references alb_sg
+- Terraform automatically handles dependency order
+
+Security Notes:
+- ECS tasks are NOT directly accessible from internet
+- Even though in public subnets, security group protects them
+- Only ALB can reach containers
+- This is defense in depth
+
+────────────────────────────────────────────────────────────────────────────
+FILE: terraform/alb.tf
+────────────────────────────────────────────────────────────────────────────
+
+Purpose: Define Application Load Balancer, target group, and listener
+
+Content Breakdown:
+
+Application Load Balancer:
+```hcl
+resource "aws_lb" "proj2_alb" {
+  name               = "proj2-alb"
+  internal           = false
+```
+- internal: false = internet-facing (has public IPs)
+- internal: true = only accessible from VPC
+
+```hcl
+  load_balancer_type = "application"
+```
+- application: Layer 7 load balancer (HTTP/HTTPS)
+- Other options: network (Layer 4, TCP/UDP), gateway (Layer 3)
+
+```hcl
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.public[*].id
+```
+- security_groups: Attach alb_sg for traffic control
+- subnets: Deploy in both public subnets (multi-AZ)
+- [*].id: Get all subnet IDs
+
+```hcl
+  enable_deletion_protection = false
+```
+- false: Can delete via Terraform
+- true: Must manually disable before deleting (production safety)
+
+```hcl
+  enable_http2 = true
+```
+- HTTP/2 support enabled (better performance)
+
+Target Group:
+```hcl
+resource "aws_lb_target_group" "proj2_tg" {
+  name        = "proj2-tg"
+  port        = var.container_port
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.proj2_vpc.id
+  target_type = "ip"
+```
+- port: 8080 (matches container port)
+- protocol: HTTP (could be HTTPS with certificates)
+- target_type: "ip" required for Fargate (vs "instance" for EC2)
+
+Health Check Configuration:
+```hcl
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    path                = "/health"
+    protocol            = "HTTP"
+    matcher             = "200"
+  }
+```
+Let's break this down:
+
+- enabled: Health checks are active
+- path: "/health" - endpoint to check
+  - Our Flask app has this endpoint
+  - Returns {"status": "ok", "timestamp": "..."}
+
+- interval: 30 seconds between checks
+  - Every 30s, ALB sends: GET /health
+
+- timeout: 5 seconds to wait for response
+  - If no response in 5s, check fails
+
+- healthy_threshold: 2 consecutive successes needed
+  - Check 1: 200 OK
+  - Check 2: 200 OK → Target is HEALTHY
+
+- unhealthy_threshold: 3 consecutive failures needed
+  - Check 1: timeout
+  - Check 2: timeout
+  - Check 3: timeout → Target is UNHEALTHY
+
+- matcher: "200" - acceptable status codes
+  - Could be: "200,201,202"
+  - Or range: "200-299"
+
+Health Check Timeline Example:
+```
+t=0s:    ALB checks /health → 200 OK (count: 1 success)
+t=30s:   ALB checks /health → 200 OK (count: 2 success) → HEALTHY
+t=60s:   ALB checks /health → 200 OK (remains healthy)
+...
+t=300s:  Container crashes
+t=300s:  ALB checks /health → timeout (count: 1 failure)
+t=330s:  ALB checks /health → timeout (count: 2 failures)
+t=360s:  ALB checks /health → timeout (count: 3 failures) → UNHEALTHY
+         ALB stops sending traffic
+         ECS detects unhealthy task, restarts it
+t=400s:  New container starts
+t=420s:  ALB checks /health → 200 OK (count: 1 success)
+t=450s:  ALB checks /health → 200 OK (count: 2 success) → HEALTHY
+         ALB resumes sending traffic
+```
+
+```hcl
+  deregistration_delay = 30
+```
+- When removing a target, wait 30s for in-flight requests
+- Prevents connection errors during deployment
+- Default is 300s (5 minutes), we use 30s for faster updates
+
+ALB Listener:
+```hcl
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.proj2_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+```
+- Listens for connections on port 80
+- arn: Amazon Resource Name (unique identifier)
+
+```hcl
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.proj2_tg.arn
+  }
+```
+- default_action: What to do with requests
+- type: "forward" - send to target group
+- Other types: redirect, fixed-response, authenticate
+
+Could add rules like:
+```hcl
+# Example (not in our code):
+# Route /api/* to api-target-group
+# Route everything else to default-target-group
+```
+
+ALB Request Flow:
+```
+1. User request arrives at ALB:80
+2. Listener receives request
+3. Default action: forward to proj2_tg
+4. Target group has registered IPs (ECS tasks)
+5. Target group checks health status
+6. Forwards to healthy target
+7. ECS task processes request
+8. Response flows back through ALB
+```
+
+Why 503 Right Now?
+When we tested the ALB, we got 503. Here's why:
+- ALB is created ✓
+- Listener is configured ✓
+- Target group exists ✓
+- Target group has ZERO registered targets ✗
+- No ECS service running yet ✗
+- ALB returns 503: No available targets
+
+After Phase E (ECS deployment):
+- ECS service will register task IPs with target group
+- Health checks will pass
+- ALB will return 200 with our JSON response
+
+────────────────────────────────────────────────────────────────────────────
+Resource Dependencies (Implicit)
+────────────────────────────────────────────────────────────────────────────
+
+Terraform automatically detects dependencies:
+
+VPC → Internet Gateway (IGW needs VPC ID)
+VPC → Subnets (Subnets need VPC ID)
+VPC → Security Groups (SGs need VPC ID)
+IGW → Route Table (Route needs IGW ID)
+Subnets → Route Table Associations (Needs subnet IDs)
+Security Groups → ALB (ALB needs SG IDs)
+Subnets → ALB (ALB needs subnet IDs)
+VPC → Target Group (TG needs VPC ID)
+ALB → Listener (Listener needs ALB ARN)
+
+Creation Order (automatically determined):
+1. VPC
+2. IGW, Subnets, Security Groups (parallel)
+3. Route Table
+4. Route Table Associations, Target Group
+5. ALB
+6. Listener
+
+Terraform builds a dependency graph and creates resources in the correct order.
+This is one of Terraform's most powerful features.
+
+================================================================================
+6. THE TERRAFORM WORKFLOW
+================================================================================
+
+The Terraform workflow consists of several commands. Let's understand each:
+
+Step 1: terraform init
+-----------------------
+**What it does:**
+- Downloads provider plugins (AWS provider in our case)
+- Initializes backend (where state is stored)
+- Prepares working directory
+
+**Our execution:**
+```bash
+cd /Users/charithkapuluru/Desktop/Proj-2/proj2-ecs-fargate/terraform
+terraform init
+```
+
+**Output we got:**
+```
+Initializing the backend...
+Initializing provider plugins...
+- Finding hashicorp/aws versions matching "~> 5.0"...
+- Installing hashicorp/aws v5.100.0...
+- Installed hashicorp/aws v5.100.0 (signed by HashiCorp)
+
+Terraform has created a lock file .terraform.lock.hcl to record the provider
+selections it made above.
+
+Terraform has been successfully initialized!
+```
+
+**What happened:**
+1. Terraform read our main.tf file
+2. Saw we need AWS provider version ~> 5.0
+3. Downloaded aws provider v5.100.0 to .terraform/ directory
+4. Created .terraform.lock.hcl to lock this version
+5. Ready to use
+
+**The lock file (.terraform.lock.hcl):**
+- Records exact provider versions
+- Commit this to git
+- Ensures team uses same versions
+- Prevents "works on my machine" issues
+
+**When to run init:**
+- First time in new directory
+- After changing provider version
+- After adding new providers
+- After cloning repository
+
+Step 2: terraform validate
+---------------------------
+**What it does:**
+- Checks syntax of .tf files
+- Validates references between resources
+- Ensures required arguments are present
+- Does NOT contact AWS (offline check)
+
+**Our execution:**
+```bash
+terraform validate
+```
+
+**Output we got:**
+```
+Success! The configuration is valid.
+```
+
+**What it checks:**
+- Syntax errors (missing braces, typos)
+- Invalid resource types
+- Missing required arguments
+- Invalid attribute references
+- Type mismatches
+
+**Example errors it would catch:**
+```hcl
+# Missing required argument
+resource "aws_vpc" "bad" {
+  # ERROR: cidr_block is required
+}
+
+# Invalid reference
+resource "aws_subnet" "bad" {
+  vpc_id = aws_vpc.typo.id  # ERROR: "typo" doesn't exist
+}
+
+# Type mismatch
+variable "port" {
+  type    = number
+  default = "eighty"  # ERROR: string, expected number
+}
+```
+
+**When to run validate:**
+- After writing new Terraform code
+- Before committing changes
+- In CI/CD pipelines
+
+Step 3: terraform plan
+-----------------------
+**What it does:**
+- Contacts AWS to check current state
+- Compares current state to desired state (your code)
+- Shows what changes will be made
+- Creates execution plan
+- Does NOT make any changes
+
+**Our execution:**
+```bash
+terraform plan -out=tfplan
+```
+
+**The -out flag:**
+- Saves the plan to a file (tfplan)
+- Ensures apply uses exact same plan
+- Prevents race conditions
+- Binary file (don't edit it)
+
+**Output format:**
+```
+Terraform will perform the following actions:
+
+  # aws_vpc.proj2_vpc will be created
+  + resource "aws_vpc" "proj2_vpc" {
+      + cidr_block = "10.0.0.0/16"
+      + id         = (known after apply)
+      ...
+    }
+
+Plan: 12 to add, 0 to change, 0 to destroy.
+```
+
+**Symbols in plan:**
+- `+` = will be created
+- `-` = will be destroyed
+- `~` = will be modified in-place
+- `-/+` = will be destroyed and recreated
+
+**"(known after apply)":**
+- Value not known until resource is created
+- AWS assigns IDs, ARNs, DNS names
+- Terraform can't predict these
+
+**Our plan showed:**
+```
+Plan: 12 to add, 0 to change, 0 to destroy.
+```
+- 12 resources will be created
+- 0 resources will be modified
+- 0 resources will be deleted
+
+**When to run plan:**
+- Before every apply
+- To preview changes
+- To validate your code actually works
+- To review before approving in team settings
+
+**Plan is crucial for safety:**
+Without plan: "I hope this works"
+With plan: "I know exactly what will happen"
+
+Step 4: terraform apply
+------------------------
+**What it does:**
+- Executes the plan
+- Makes actual API calls to AWS
+- Creates/modifies/deletes resources
+- Updates state file
+- Shows progress
+
+**Our execution:**
+```bash
+terraform apply tfplan
+```
+
+**Why we passed tfplan:**
+- Uses the saved plan (skips plan step)
+- No approval prompt needed
+- Exact plan we reviewed
+
+**Alternative:**
+```bash
+terraform apply  # Without saved plan
+# Would run plan again, then prompt: "Do you want to proceed? yes/no"
+```
+
+**Output we got:**
+```
+aws_vpc.proj2_vpc: Creating...
+aws_vpc.proj2_vpc: Still creating... [10s elapsed]
+aws_vpc.proj2_vpc: Creation complete after 13s [id=vpc-025c70216bd21e55c]
+aws_internet_gateway.proj2_igw: Creating...
+...
+aws_lb.proj2_alb: Creating...
+aws_lb.proj2_alb: Still creating... [10s elapsed]
+...
+aws_lb.proj2_alb: Creation complete after 3m34s
+
+Apply complete! Resources: 12 added, 0 changed, 0 destroyed.
+
+Outputs:
+alb_dns_name = "proj2-alb-830302272.us-east-1.elb.amazonaws.com"
+...
+```
+
+**What happened:**
+1. Terraform read the saved plan
+2. Started creating resources in dependency order
+3. VPC created first (13 seconds)
+4. Resources that depend on VPC created next
+5. ALB created last (3m 34s - load balancers are slow)
+6. State file updated with all resource IDs
+7. Outputs displayed
+
+**Why ALB took 3+ minutes:**
+- AWS needs to provision across multiple AZs
+- DNS propagation
+- Internal health checks
+- Subnet endpoint creation
+
+**State file (terraform.tfstate):**
+- JSON file tracking all resources
+- Contains: IDs, ARNs, attributes
+- CRITICAL - if lost, Terraform loses track of resources
+- NEVER commit to git (contains sensitive data)
+- For teams: Use remote state (S3 + DynamoDB)
+
+**When to run apply:**
+- After reviewing plan
+- When ready to make changes
+- In automated deployments (with approval)
+
+Step 5: terraform output
+-------------------------
+**What it does:**
+- Displays output values
+- Can query specific outputs
+- Can format as JSON
+
+**Usage:**
+```bash
+# All outputs
+terraform output
+
+# Specific output
+terraform output alb_dns_name
+
+# Raw value (no quotes)
+terraform output -raw alb_dns_name
+
+# JSON format
+terraform output -json
+```
+
+**Our outputs:**
+```
+alb_dns_name = "proj2-alb-830302272.us-east-1.elb.amazonaws.com"
+alb_url = "http://proj2-alb-830302272.us-east-1.elb.amazonaws.com"
+vpc_id = "vpc-025c70216bd21e55c"
+public_subnet_ids = [
+  "subnet-08c639441bfefbed5",
+  "subnet-0f8cae1cf0464c070",
+]
+```
+
+**When to use:**
+- Get values for scripts
+- Quick reference without AWS Console
+- Pass to other systems
+
+Other Useful Commands
+---------------------
+
+**terraform show:**
+- Display current state in human-readable format
+- See all resource attributes
+
+**terraform state list:**
+- List all resources in state
+```bash
+terraform state list
+# Output:
+# aws_vpc.proj2_vpc
+# aws_subnet.public[0]
+# aws_subnet.public[1]
+# ...
+```
+
+**terraform state show RESOURCE:**
+- Show detailed info about specific resource
+```bash
+terraform state show aws_vpc.proj2_vpc
+```
+
+**terraform destroy:**
+- Delete all resources
+- Useful for cleaning up (we'll use in Phase H)
+```bash
+terraform destroy
+# Prompts for confirmation
+# Deletes everything in reverse dependency order
+```
+
+**terraform fmt:**
+- Formats .tf files consistently
+- Recommended before committing
+
+**terraform graph:**
+- Generates dependency graph
+- Output in DOT format (can visualize with Graphviz)
+
+Terraform Workflow Summary
+---------------------------
+```
+Write code (.tf files)
+  ↓
+terraform init (download providers)
+  ↓
+terraform validate (check syntax)
+  ↓
+terraform plan (preview changes) → Review carefully!
+  ↓
+terraform apply (make changes)
+  ↓
+Resources created in AWS
+  ↓
+terraform output (get values)
+```
+
+================================================================================
+7. WHAT WAS CREATED IN AWS
+================================================================================
+
+Let's look at what actually exists in your AWS account now.
+
+VPC (vpc-025c70216bd21e55c)
+---------------------------
+**AWS Console Location:**
+VPC Dashboard → Your VPCs
+
+**Attributes:**
+- CIDR: 10.0.0.0/16
+- DNS Resolution: Enabled
+- DNS Hostnames: Enabled
+- Default VPC: No
+- State: Available
+
+**How to verify:**
+```bash
+aws ec2 describe-vpcs --vpc-ids vpc-025c70216bd21e55c
+```
+
+Internet Gateway (igw-098d93a0e9c7effaa)
+----------------------------------------
+**AWS Console Location:**
+VPC Dashboard → Internet Gateways
+
+**Attributes:**
+- Attached to: vpc-025c70216bd21e55c
+- State: Attached
+
+**How to verify:**
+```bash
+aws ec2 describe-internet-gateways --internet-gateway-ids igw-098d93a0e9c7effaa
+```
+
+Subnets
+-------
+**Subnet 1: subnet-08c639441bfefbed5**
+- CIDR: 10.0.1.0/24
+- AZ: us-east-1a
+- Available IPs: 251 (256 - 5 AWS reserved)
+- Auto-assign public IP: Yes
+- Route table: rtb-03a9e65e2e7fc2f73
+
+**Subnet 2: subnet-0f8cae1cf0464c070**
+- CIDR: 10.0.2.0/24
+- AZ: us-east-1b
+- Available IPs: 251
+- Auto-assign public IP: Yes
+- Route table: rtb-03a9e65e2e7fc2f73
+
+**AWS Console Location:**
+VPC Dashboard → Subnets
+
+**AWS reserves 5 IPs per subnet:**
+- 10.0.1.0: Network address
+- 10.0.1.1: VPC router
+- 10.0.1.2: DNS server
+- 10.0.1.3: Future use
+- 10.0.1.255: Broadcast address
+
+Route Table (rtb-03a9e65e2e7fc2f73)
+-----------------------------------
+**AWS Console Location:**
+VPC Dashboard → Route Tables
+
+**Routes:**
+1. Destination: 10.0.0.0/16 → Target: local (automatic)
+2. Destination: 0.0.0.0/0 → Target: igw-098d93a0e9c7effaa
+
+**Associated Subnets:**
+- subnet-08c639441bfefbed5
+- subnet-0f8cae1cf0464c070
+
+Security Groups
+---------------
+**ALB Security Group (sg-08111206409a97f83)**
+
+Inbound Rules:
+| Type | Protocol | Port | Source    | Description        |
+|------|----------|------|-----------|--------------------|
+| HTTP | TCP      | 80   | 0.0.0.0/0 | HTTP from internet |
+
+Outbound Rules:
+| Type | Protocol | Port | Destination | Description              |
+|------|----------|------|-------------|--------------------------|
+| All  | All      | All  | 0.0.0.0/0   | Allow all outbound       |
+
+**ECS Security Group (sg-0681b6ec6a3187236)**
+
+Inbound Rules:
+| Type       | Protocol | Port | Source             | Description           |
+|------------|----------|------|--------------------|----------------------|
+| Custom TCP | TCP      | 8080 | sg-08111206409a97f83 | Container port from ALB |
+
+Outbound Rules:
+| Type  | Protocol | Port | Destination | Description                |
+|-------|----------|------|-------------|----------------------------|
+| HTTPS | TCP      | 443  | 0.0.0.0/0   | HTTPS for ECR/CloudWatch  |
+| HTTP  | TCP      | 80   | 0.0.0.0/0   | HTTP for general          |
+
+**AWS Console Location:**
+EC2 Dashboard → Security Groups
+
+Application Load Balancer
+--------------------------
+**Name:** proj2-alb
+**ARN:** arn:aws:elasticloadbalancing:us-east-1:501894534533:loadbalancer/app/proj2-alb/e84726ce8b86ae60
+**DNS Name:** proj2-alb-830302272.us-east-1.elb.amazonaws.com
+**Scheme:** internet-facing
+**IP Address Type:** ipv4
+**VPC:** vpc-025c70216bd21e55c
+**Availability Zones:**
+- us-east-1a (subnet-08c639441bfefbed5)
+- us-east-1b (subnet-0f8cae1cf0464c070)
+**Security Groups:** sg-08111206409a97f83
+
+**AWS Console Location:**
+EC2 Dashboard → Load Balancers
+
+**Public IPs (assigned by AWS):**
+The ALB has public IPs in each AZ. When we ran curl, it resolved to
+98.94.200.88 (one of the ALB's IPs).
+
+Target Group (proj2-tg)
+-----------------------
+**ARN:** arn:aws:elasticloadbalancing:us-east-1:501894534533:targetgroup/proj2-tg/3b66aac7debb06a7
+**Target Type:** IP
+**Protocol:** HTTP
+**Port:** 8080
+**VPC:** vpc-025c70216bd21e55c
+**Health Check:**
+- Protocol: HTTP
+- Path: /health
+- Interval: 30s
+- Timeout: 5s
+- Healthy threshold: 2
+- Unhealthy threshold: 3
+- Success codes: 200
+
+**Registered Targets:** 0 (none yet, Phase E will add)
+
+**AWS Console Location:**
+EC2 Dashboard → Target Groups
+
+Listener
+--------
+**Load Balancer:** proj2-alb
+**Protocol:** HTTP
+**Port:** 80
+**Default Action:** Forward to proj2-tg
+**Rules:** 1 (default rule)
+
+**AWS Console Location:**
+EC2 Dashboard → Load Balancers → proj2-alb → Listeners tab
+
+Tags (All Resources)
+--------------------
+Every resource has these tags:
+- Project: proj2
+- Environment: dev
+- ManagedBy: terraform
+- Name: (varies by resource)
+
+Tags are visible in AWS Console and useful for:
+- Cost allocation reports (see costs per project)
+- Resource filtering
+- Automation
+- Compliance
+
+================================================================================
+8. TESTING AND VERIFICATION
+================================================================================
+
+After creation, we verified the infrastructure works.
+
+Test 1: ALB DNS Resolution
+---------------------------
+**Command:**
+```bash
+terraform output alb_dns_name
+```
+
+**Result:**
+```
+proj2-alb-830302272.us-east-1.elb.amazonaws.com
+```
+
+**What this tells us:**
+- ALB was successfully created
+- Has a public DNS name
+- DNS is registered in AWS's Route 53
+
+Test 2: DNS Lookup
+-------------------
+**Command:**
+```bash
+nslookup proj2-alb-830302272.us-east-1.elb.amazonaws.com
+```
+
+**Expected result:**
+- Multiple A records (one per AZ)
+- Public IP addresses
+
+**What this tells us:**
+- DNS is propagated
+- ALB is reachable from internet
+
+Test 3: HTTP Request
+---------------------
+**Command:**
+```bash
+curl -v http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+```
+
+**Result:**
+```
+< HTTP/1.1 503 Service Temporarily Unavailable
+< Server: awselb/2.0
+<html>
+<head><title>503 Service Temporarily Unavailable</title></head>
+<body>
+<center><h1>503 Service Temporarily Unavailable</h1></center>
+</body>
+</html>
+```
+
+**Analysis:**
+This is EXPECTED and CORRECT!
+
+Why 503?
+- ALB is working ✓
+- Listener is configured ✓
+- Target group exists ✓
+- No registered targets ✗
+- No ECS tasks running ✗
+
+The 503 error means:
+"I'm the ALB, I'm alive, but I have no backend servers to send your request to."
+
+**Response headers:**
+- Server: awselb/2.0 (confirms this is an ALB)
+- HTTP/1.1 503 (service unavailable)
+
+**Connection info:**
+- Connected to: 98.94.200.88
+- Port: 80
+- Connection successful
+
+Test 4: Security Group Verification
+------------------------------------
+**What we checked:**
+1. Can we reach ALB on port 80? YES (got 503 response)
+2. Can we reach ALB on port 443? (didn't test, not configured)
+3. Is ALB accessible from internet? YES (curl from laptop worked)
+
+**What we'll verify in Phase E:**
+1. Can ALB reach ECS tasks on port 8080?
+2. Can ECS tasks reach ECR on port 443?
+3. Can ECS tasks reach CloudWatch on port 443?
+
+Test 5: Infrastructure State
+-----------------------------
+**Command:**
+```bash
+terraform state list
+```
+
+**Expected output (abbreviated):**
+```
+aws_internet_gateway.proj2_igw
+aws_lb.proj2_alb
+aws_lb_listener.http
+aws_lb_target_group.proj2_tg
+aws_route_table.public
+aws_route_table_association.public[0]
+aws_route_table_association.public[1]
+aws_security_group.alb_sg
+aws_security_group.ecs_sg
+aws_subnet.public[0]
+aws_subnet.public[1]
+aws_vpc.proj2_vpc
+```
+
+**What this tells us:**
+- All 12 resources are tracked in state
+- Terraform knows about everything it created
+- We can manage these resources going forward
+
+Expected vs Actual
+------------------
+According to Phase D plan, we expected:
+- 12 resources created ✓
+- VPC with 2 public subnets ✓
+- Internet Gateway ✓
+- ALB spanning 2 AZs ✓
+- Security groups configured ✓
+- ALB returning 503 (no targets) ✓
+
+Everything matches expectations!
+
+================================================================================
+9. KEY CONCEPTS SUMMARY
+================================================================================
+
+Infrastructure as Code (IaC)
+----------------------------
+- Define infrastructure in code files
+- Version control your infrastructure
+- Reproducible and consistent
+- Industry-standard practice
+
+Terraform
+---------
+- Declarative IaC tool
+- Cloud-agnostic (works with many providers)
+- Plan before apply (safety)
+- Tracks state
+- Workflow: init → validate → plan → apply
+
+AWS VPC Networking
+------------------
+- VPC: Isolated network in AWS
+- Subnets: Subdivisions in availability zones
+- Internet Gateway: VPC ↔ Internet
+- Route Tables: Traffic routing rules
+- Public subnet: Has route to IGW
+
+Security Groups
+---------------
+- Virtual firewalls
+- Stateful (allow inbound = allow outbound response)
+- Resource-level (not subnet-level)
+- Default deny, explicit allow
+- Can reference other security groups
+
+Application Load Balancer
+--------------------------
+- Layer 7 load balancer (HTTP/HTTPS)
+- Distributes traffic across targets
+- Health checks
+- High availability (multi-AZ)
+- Components: Listener, Target Group, Targets
+
+Terraform Resources
+-------------------
+- Fundamental building blocks
+- resource "type" "name" { }
+- Can reference other resources
+- Automatic dependency management
+
+Terraform Variables
+-------------------
+- Input parameters
+- Types: string, number, bool, list, map, object
+- Can have defaults
+- Enables reusability
+
+Terraform Outputs
+-----------------
+- Export values
+- Display after apply
+- Can be queried
+- Used by scripts and other modules
+
+High Availability
+-----------------
+- Multiple availability zones
+- Redundancy
+- Fault tolerance
+- Our ALB spans 2 AZs
+
+Cost Considerations
+-------------------
+Current Phase D costs (approximate per month):
+- VPC: Free
+- Subnets: Free
+- Internet Gateway: Free
+- Route Tables: Free
+- Security Groups: Free
+- ALB: ~$16/month base + $0.008/hour = ~$22/month
+- Data transfer: Varies
+
+Total Phase D cost: ~$22/month
+
+Tips to reduce:
+- Use smaller instance types (Phase E)
+- Delete when not testing
+- Use AWS Free Tier (new accounts)
+
+================================================================================
+10. COMMON ISSUES AND SOLUTIONS
+================================================================================
+
+Issue: "Error: VPC limit exceeded"
+-----------------------------------
+**Cause:** AWS limits VPCs per region (default: 5)
+
+**Solution:**
+1. Check existing VPCs:
+   ```bash
+   aws ec2 describe-vpcs --query 'Vpcs[].VpcId'
+   ```
+2. Delete unused VPCs via Console or:
+   ```bash
+   aws ec2 delete-vpc --vpc-id vpc-xxxxx
+   ```
+3. Or request limit increase via AWS Support
+
+Issue: "Error: InvalidSubnet: Availability Zone not available"
+---------------------------------------------------------------
+**Cause:** Some AZs not available in your account/region
+
+**Solution:**
+1. List available AZs:
+   ```bash
+   aws ec2 describe-availability-zones --region us-east-1
+   ```
+2. Update variables.tf with available AZs
+
+Issue: terraform init fails with plugin download error
+-------------------------------------------------------
+**Cause:** Network issues, proxy, or firewall
+
+**Solution:**
+1. Check internet connection
+2. If behind proxy:
+   ```bash
+   export HTTP_PROXY=http://proxy:port
+   export HTTPS_PROXY=http://proxy:port
+   terraform init
+   ```
+3. Or download provider manually and use plugin cache
+
+Issue: "Error: CIDR block overlaps with existing VPC"
+------------------------------------------------------
+**Cause:** Another VPC already uses 10.0.0.0/16
+
+**Solution:**
+1. Change vpc_cidr in variables.tf:
+   ```hcl
+   default = "172.16.0.0/16"
+   ```
+2. Update subnet CIDRs accordingly:
+   ```hcl
+   default = ["172.16.1.0/24", "172.16.2.0/24"]
+   ```
+
+Issue: terraform apply hangs
+-----------------------------
+**Cause:** Usually waiting for resource creation (ALB takes time)
+
+**Solution:**
+1. Wait (ALBs can take 3-5 minutes)
+2. Check AWS Console for progress
+3. If truly stuck (>10 minutes), Ctrl+C and check AWS Console
+
+Issue: "Error: UnauthorizedOperation"
+--------------------------------------
+**Cause:** IAM user lacks permissions
+
+**Solution:**
+1. Check IAM policies:
+   ```bash
+   aws iam list-attached-user-policies --user-name test_user
+   ```
+2. Need at minimum:
+   - ec2:* (for VPC, subnets, etc.)
+   - elasticloadbalancing:* (for ALB)
+3. Or attach AdministratorAccess (not recommended for production)
+
+Issue: ALB returns 504 Gateway Timeout (not 503)
+-------------------------------------------------
+**Cause:** Target is registered but not responding
+
+**Solution:**
+1. Check target health:
+   ```bash
+   aws elbv2 describe-target-health --target-group-arn <arn>
+   ```
+2. Check ECS task is running
+3. Check security group allows ALB → task traffic
+4. Check task logs for errors
+
+Issue: Can't access ALB from browser
+-------------------------------------
+**Cause:** Multiple possibilities
+
+**Solution:**
+1. Wait 5 minutes for DNS propagation
+2. Check security group:
+   ```bash
+   aws ec2 describe-security-groups --group-ids sg-08111206409a97f83
+   ```
+3. Verify ALB is active:
+   ```bash
+   aws elbv2 describe-load-balancers --names proj2-alb
+   ```
+4. Try curl instead of browser (browser might cache errors)
+
+Issue: terraform state is corrupted/lost
+-----------------------------------------
+**Cause:** Manual deletion of resources, file corruption
+
+**Solution:**
+1. If resources still exist, import them:
+   ```bash
+   terraform import aws_vpc.proj2_vpc vpc-025c70216bd21e55c
+   ```
+2. If state is corrupt:
+   ```bash
+   terraform state pull > backup.tfstate
+   # Edit backup.tfstate to fix issues
+   terraform state push backup.tfstate
+   ```
+3. Prevention: Use remote state (S3 + DynamoDB)
+
+Issue: Changes detected on every plan
+--------------------------------------
+**Cause:** Drift between code and actual state
+
+**Solution:**
+1. Check what's changing:
+   ```bash
+   terraform plan
+   ```
+2. If tags changing: AWS might be adding tags
+3. If attributes changing: Check for manual changes
+4. Update code to match, or run apply to fix
+
+Issue: terraform destroy fails
+-------------------------------
+**Cause:** Dependencies or deletion protection
+
+**Solution:**
+1. Check error message for specific resource
+2. Common issues:
+   - ALB deletion protection enabled
+   - Resources created outside Terraform
+3. Manual cleanup may be needed:
+   ```bash
+   aws elbv2 delete-load-balancer --load-balancer-arn <arn>
+   ```
+
+Debugging Tips
+--------------
+1. Enable detailed logging:
+   ```bash
+   export TF_LOG=DEBUG
+   terraform apply
+   ```
+
+2. Check Terraform state:
+   ```bash
+   terraform state list
+   terraform state show <resource>
+   ```
+
+3. Verify in AWS Console:
+   - VPC Dashboard for networking
+   - EC2 Dashboard for ALB, security groups
+   - CloudTrail for API calls
+
+4. Use AWS CLI for verification:
+   ```bash
+   aws ec2 describe-vpcs
+   aws elbv2 describe-load-balancers
+   aws ec2 describe-security-groups
+   ```
+
+================================================================================
+WHAT'S NEXT: PHASE E
+================================================================================
+
+Phase D Completion Checklist:
+------------------------------
+✓ Created Terraform configuration files
+✓ Provisioned VPC with 2 public subnets
+✓ Configured Internet Gateway and routing
+✓ Set up security groups
+✓ Deployed Application Load Balancer
+✓ Created target group with health checks
+✓ Verified ALB is accessible (503 expected)
+✓ Committed infrastructure code to git
+
+Current State:
+--------------
+- Network infrastructure: Complete
+- Load balancer: Active, waiting for targets
+- Security: Configured and tested
+- Next need: ECS cluster and containers
+
+Phase E Preview:
+----------------
+In the next phase, we'll deploy our Flask application to ECS Fargate:
+
+1. Create IAM role for ECS task execution
+   - Permissions to pull from ECR
+   - Permissions to write CloudWatch logs
+
+2. Create CloudWatch log group
+   - Destination for container logs
+   - 7-day retention
+
+3. Create ECS cluster
+   - Logical grouping of services
+
+4. Create ECS task definition
+   - Specify Docker image (from ECR)
+   - CPU and memory allocation (256/512)
+   - Port mapping (8080)
+   - Logging configuration
+
+5. Create ECS service
+   - Run 1 task (configurable to 2)
+   - Register with ALB target group
+   - Configure health check grace period
+
+Expected Outcome:
+-----------------
+After Phase E:
+- curl http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+  → 200 OK with JSON: {"message": "Hello from ECS Fargate!"}
+- Container logs visible in CloudWatch
+- ALB health checks passing
+- Fully functional web application
+
+Architecture After Phase E:
+---------------------------
+Internet → ALB (Phase D) → ECS Tasks (Phase E) → CloudWatch Logs (Phase E)
+                ↑                    ↓
+            Target Group    ECR Image (Phase C)
+
+================================================================================
+CONCLUSION
+================================================================================
+
+In Phase D, we successfully:
+
+1. **Learned Infrastructure as Code**: Understood the value of defining
+   infrastructure in code rather than manual configuration.
+
+2. **Mastered Terraform Basics**: Learned the workflow (init, validate, plan,
+   apply), resource syntax, variables, outputs, and state management.
+
+3. **Built AWS Network Infrastructure**: Created a production-ready VPC with
+   proper subnetting, routing, and internet connectivity.
+
+4. **Configured Security**: Set up security groups following least-privilege
+   principles, with defense-in-depth architecture.
+
+5. **Deployed Load Balancer**: Provisioned an Application Load Balancer with
+   health checks, ready to distribute traffic to containers.
+
+6. **Verified Infrastructure**: Tested each component, confirmed expected
+   behavior (503 until containers are deployed).
+
+Skills Demonstrated:
+--------------------
+- Infrastructure as Code (IaC) principles
+- Terraform configuration and workflow
+- AWS VPC networking concepts
+- Security group configuration
+- Application Load Balancer setup
+- Multi-AZ high availability design
+- Resource dependency management
+- Infrastructure testing and verification
+
+Professional Value:
+-------------------
+This phase demonstrates skills directly applicable to:
+- DevOps Engineer roles
+- Cloud Engineer positions
+- Site Reliability Engineering (SRE)
+- Infrastructure Engineer jobs
+- Platform Engineering roles
+
+You can now confidently discuss:
+- "I provisioned AWS infrastructure using Terraform"
+- "I designed a highly available VPC architecture"
+- "I configured Application Load Balancers with health checks"
+- "I implemented security group best practices"
+- "I used Infrastructure as Code for reproducible deployments"
+
+Documentation Created:
+----------------------
+This phase-d-explanation.txt file, along with the Terraform code itself,
+serves as:
+- Learning resource
+- Reference documentation
+- Portfolio evidence
+- Interview talking points
+- Future project template
+
+Time Investment:
+----------------
+Phase D took approximately 10-15 minutes to execute, but represents
+infrastructure that would take hours to create manually in the AWS Console.
+More importantly, this can now be recreated in any AWS account, in any region,
+with a single command: terraform apply
+
+Next Steps:
+-----------
+Proceed to Phase E to deploy the containerized application to ECS Fargate,
+bringing the infrastructure to life!
+
+================================================================================
+END OF PHASE D EXPLANATION
+================================================================================

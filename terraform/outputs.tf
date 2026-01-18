@@ -32,3 +32,18 @@ output "alb_target_group_arn" {
   description = "ARN of the ALB target group"
   value       = aws_lb_target_group.proj2_tg.arn
 }
+
+output "ecs_cluster_name" {
+  description = "Name of the ECS cluster"
+  value       = aws_ecs_cluster.proj2_cluster.name
+}
+
+output "ecs_service_name" {
+  description = "Name of the ECS service"
+  value       = aws_ecs_service.proj2_service.name
+}
+
+output "cloudwatch_log_group" {
+  description = "CloudWatch log group for ECS containers"
+  value       = aws_cloudwatch_log_group.ecs_logs.name
+}

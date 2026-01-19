@@ -193,7 +193,8 @@ resource "aws_iam_role_policy" "codepipeline_policy" {
           "ecs:DescribeTasks",
           "ecs:ListTasks",
           "ecs:RegisterTaskDefinition",
-          "ecs:UpdateService"
+          "ecs:UpdateService",
+          "ecs:DescribeClusters"
         ]
         Resource = "*"
       },
@@ -202,7 +203,12 @@ resource "aws_iam_role_policy" "codepipeline_policy" {
         Action = [
           "iam:PassRole"
         ]
-        Resource = aws_iam_role.ecs_task_execution_role.arn
+        Resource = "*"
+        Condition = {
+          StringLike = {
+            "iam:PassedToService" = "ecs-tasks.amazonaws.com"
+          }
+        }
       }
     ]
   })

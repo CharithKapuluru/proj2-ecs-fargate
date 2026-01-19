@@ -12,9 +12,9 @@ phases:
       - echo "Setting up environment variables..."
       - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_NAME
       - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
-      - IMAGE_TAG=${COMMIT_HASH:=latest}
-      - echo "Repository URI: $REPOSITORY_URI"
-      - echo "Image Tag: $IMAGE_TAG"
+      - IMAGE_TAG=$COMMIT_HASH
+      - echo "Repository URI is $REPOSITORY_URI"
+      - echo "Image Tag is $IMAGE_TAG"
 
   build:
     commands:

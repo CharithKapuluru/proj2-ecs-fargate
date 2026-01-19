@@ -1,0 +1,1545 @@
+================================================================================
+PHASE G: CI/CD PIPELINE WITH AWS CODEPIPELINE - DETAILED EXPLANATION
+================================================================================
+
+This document provides a comprehensive, beginner-friendly explanation of Phase G,
+where we built an automated CI/CD pipeline using AWS CodePipeline and CodeBuild
+to automatically deploy code changes to ECS Fargate.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. Introduction to CI/CD
+2. AWS CI/CD Services Overview
+3. What We Built in Phase G
+4. CodeStar Connections (GitHub Integration)
+5. CodeBuild Deep Dive
+6. CodePipeline Deep Dive
+7. The buildspec.yml Explained
+8. IAM Roles and Permissions
+9. File-by-File Breakdown
+10. Complete Pipeline Flow
+11. Testing Your Pipeline
+12. Key Concepts Summary
+13. Common Issues and Solutions
+
+================================================================================
+1. INTRODUCTION TO CI/CD
+================================================================================
+
+What is CI/CD?
+--------------
+CI/CD stands for Continuous Integration and Continuous Deployment (or Delivery).
+
+**Continuous Integration (CI)**:
+- Developers frequently merge code changes into a shared repository
+- Each merge triggers automated builds and tests
+- Catches bugs early, before they reach production
+- "Integrate early, integrate often"
+
+**Continuous Deployment (CD)**:
+- Automatically deploy code to production after passing tests
+- Every change that passes CI is deployed automatically
+- No manual intervention required
+- "If it passes tests, ship it"
+
+**Continuous Delivery (also CD)**:
+- Similar to Continuous Deployment
+- But requires manual approval before production
+- Good for regulated industries
+
+Why CI/CD Matters
+-----------------
+Without CI/CD (Manual Process):
+```
+Developer writes code
+    ↓
+Developer manually builds
+    ↓
+Developer manually tests
+    ↓
+Developer creates Docker image
+    ↓
+Developer pushes to ECR
+    ↓
+Developer updates ECS service
+    ↓
+Takes 30-60 minutes, error-prone
+```
+
+With CI/CD (Automated):
+```
+Developer pushes code to GitHub
+    ↓
+Pipeline automatically:
+  - Pulls code
+  - Builds Docker image
+  - Runs tests
+  - Pushes to ECR
+  - Deploys to ECS
+    ↓
+Takes 5-10 minutes, consistent
+```
+
+Benefits of CI/CD:
+- **Speed**: Deploy in minutes, not hours
+- **Consistency**: Same process every time
+- **Reliability**: Automated tests catch bugs
+- **Confidence**: Easy rollback if needed
+- **Productivity**: Developers focus on code, not deployment
+
+CI/CD Pipeline Stages
+---------------------
+A typical CI/CD pipeline has these stages:
+
+1. **Source**: Get code from repository
+2. **Build**: Compile/build the application
+3. **Test**: Run automated tests
+4. **Deploy**: Deploy to environment
+
+Our Pipeline:
+```
+Source (GitHub) → Build (Docker) → Deploy (ECS)
+```
+
+We skipped the Test stage for simplicity, but in production you'd add:
+- Unit tests
+- Integration tests
+- Security scans
+
+================================================================================
+2. AWS CI/CD SERVICES OVERVIEW
+================================================================================
+
+AWS provides several CI/CD services:
+
+CodePipeline
+------------
+- **What**: Orchestration service for CI/CD workflows
+- **Role**: Coordinates the overall pipeline flow
+- **Analogy**: The conductor of an orchestra
+- **Features**:
+  - Visual pipeline editor
+  - Integration with many AWS services
+  - Triggers on source changes
+  - Parallel and sequential stages
+
+CodeBuild
+---------
+- **What**: Fully managed build service
+- **Role**: Compiles code, runs tests, creates artifacts
+- **Analogy**: The builder/compiler
+- **Features**:
+  - No servers to manage
+  - Pay per build minute
+  - Pre-configured build environments
+  - Custom Docker environments
+
+CodeDeploy
+----------
+- **What**: Deployment automation service
+- **Role**: Deploys to EC2, Lambda, ECS
+- **Note**: We don't use this; ECS Deploy action is built into CodePipeline
+
+CodeCommit
+----------
+- **What**: AWS's Git repository service
+- **Role**: Source code repository
+- **Note**: We use GitHub instead
+
+CodeStar Connections
+--------------------
+- **What**: Connects AWS to external Git providers
+- **Role**: Allows CodePipeline to access GitHub/Bitbucket/GitLab
+- **Features**:
+  - OAuth-based authentication
+  - Webhook for automatic triggers
+  - Fine-grained repository access
+
+Our Architecture
+----------------
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         AWS CodePipeline                                 │
+│                                                                          │
+│  ┌─────────────┐      ┌─────────────┐      ┌─────────────┐             │
+│  │   Source    │ ──── │    Build    │ ──── │   Deploy    │             │
+│  │   Stage     │      │    Stage    │      │    Stage    │             │
+│  └──────┬──────┘      └──────┬──────┘      └──────┬──────┘             │
+│         │                    │                    │                     │
+└─────────┼────────────────────┼────────────────────┼─────────────────────┘
+          │                    │                    │
+          ▼                    ▼                    ▼
+   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+   │   GitHub     │     │  CodeBuild   │     │     ECS      │
+   │              │     │              │     │   Fargate    │
+   │ CodeStar     │     │ Docker build │     │              │
+   │ Connection   │     │ Push to ECR  │     │ Update       │
+   │              │     │              │     │ Service      │
+   └──────────────┘     └──────────────┘     └──────────────┘
+```
+
+================================================================================
+3. WHAT WE BUILT IN PHASE G
+================================================================================
+
+Resources Created
+-----------------
+
+1. **S3 Bucket** (proj2-codepipeline-artifacts-501894534533)
+   - Stores pipeline artifacts between stages
+   - Versioning enabled
+   - Server-side encryption
+   - Public access blocked
+
+2. **CodeStar Connection** (proj2-github-connection)
+   - Connects AWS to GitHub
+   - OAuth authentication
+   - Enables webhook triggers
+
+3. **IAM Role - CodeBuild** (proj2-codebuild-role)
+   - Allows CodeBuild to:
+     - Write logs to CloudWatch
+     - Read/write S3 artifacts
+     - Pull/push ECR images
+
+4. **IAM Role - CodePipeline** (proj2-codepipeline-role)
+   - Allows CodePipeline to:
+     - Access S3 artifacts
+     - Use CodeStar connection
+     - Start CodeBuild builds
+     - Update ECS services
+
+5. **CodeBuild Project** (proj2-build)
+   - Build environment configuration
+   - Docker-enabled Linux container
+   - Environment variables for ECR
+
+6. **CodePipeline** (proj2-pipeline)
+   - Three-stage pipeline
+   - Source → Build → Deploy
+
+7. **CloudWatch Log Group** (/aws/codebuild/proj2-build)
+   - Build logs storage
+   - 7-day retention
+
+8. **buildspec.yml** (in repository root)
+   - Build instructions for CodeBuild
+
+Total New Resources: 12
+
+Pipeline Flow Summary
+---------------------
+```
+1. Developer pushes to GitHub (main branch)
+         │
+         ▼
+2. CodeStar webhook triggers CodePipeline
+         │
+         ▼
+3. Source Stage: Download code to S3
+         │
+         ▼
+4. Build Stage: CodeBuild runs buildspec.yml
+   - Login to ECR
+   - Build Docker image
+   - Push to ECR
+   - Create imagedefinitions.json
+         │
+         ▼
+5. Deploy Stage: Update ECS Service
+   - Register new task definition
+   - Rolling update of tasks
+         │
+         ▼
+6. New version is live!
+```
+
+================================================================================
+4. CODESTAR CONNECTIONS (GITHUB INTEGRATION)
+================================================================================
+
+What is CodeStar Connections?
+-----------------------------
+CodeStar Connections is AWS's service for connecting to external source
+control providers like GitHub, Bitbucket, and GitLab.
+
+Why not just use GitHub directly?
+- AWS needs secure, persistent access to your repository
+- OAuth tokens ensure proper authorization
+- Webhooks enable automatic pipeline triggers
+- No need to store GitHub credentials in AWS
+
+Connection Configuration
+------------------------
+```hcl
+resource "aws_codestarconnections_connection" "github" {
+  name          = "proj2-github-connection"
+  provider_type = "GitHub"
+}
+```
+
+That's all the Terraform code! But there's a catch...
+
+Manual Approval Required
+------------------------
+After Terraform creates the connection, it's in "PENDING" status.
+You must manually approve it in the AWS Console:
+
+1. Go to: Settings → Connections (in CodePipeline console)
+2. Select "proj2-github-connection"
+3. Click "Update pending connection"
+4. Authorize AWS Connector for GitHub
+5. Select your GitHub account/organization
+6. Grant access to repositories
+7. Connection becomes "AVAILABLE"
+
+Why manual? Security. AWS won't automatically get access to your
+GitHub without explicit authorization.
+
+How the Connection Works
+------------------------
+```
+1. Initial Setup:
+   AWS ─── OAuth Request ───→ GitHub
+   AWS ←── OAuth Token ─────── GitHub
+   Connection status: AVAILABLE
+
+2. When Pipeline Runs:
+   CodePipeline ─── "Get code" ───→ CodeStar Connection
+   CodeStar ─────── API Call ─────→ GitHub
+   GitHub ──────── Source Code ───→ S3 Artifact Bucket
+```
+
+Webhook Integration
+-------------------
+When you approve the connection, AWS also sets up a webhook in GitHub:
+
+- GitHub notifies AWS on every push
+- AWS starts the pipeline automatically
+- No polling required (faster triggers)
+
+You can see this webhook in:
+GitHub → Repository → Settings → Webhooks
+
+================================================================================
+5. CODEBUILD DEEP DIVE
+================================================================================
+
+What is CodeBuild?
+------------------
+CodeBuild is a fully managed build service. You define what to build,
+and AWS provides the compute environment.
+
+Think of it as:
+- Jenkins, but serverless
+- CI server without servers to manage
+- Pay only for build minutes
+
+Build Environment
+-----------------
+```hcl
+environment {
+  compute_type                = "BUILD_GENERAL1_SMALL"
+  image                       = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+  type                        = "LINUX_CONTAINER"
+  image_pull_credentials_type = "CODEBUILD"
+  privileged_mode             = true
+}
+```
+
+**compute_type**: How much CPU/memory
+- BUILD_GENERAL1_SMALL: 3 GB memory, 2 vCPUs
+- BUILD_GENERAL1_MEDIUM: 7 GB memory, 4 vCPUs
+- BUILD_GENERAL1_LARGE: 15 GB memory, 8 vCPUs
+
+We use SMALL because our build is simple.
+
+**image**: The build environment
+- aws/codebuild/amazonlinux2-x86_64-standard:5.0
+- Pre-installed: Docker, AWS CLI, Python, Node.js, etc.
+- You can also use custom Docker images
+
+**type**: Container type
+- LINUX_CONTAINER: Standard Linux builds
+- WINDOWS_CONTAINER: Windows builds
+- ARM_CONTAINER: ARM architecture
+
+**privileged_mode**: CRITICAL for Docker builds!
+- true: Can run Docker-in-Docker
+- false: Cannot run Docker commands
+- Must be true for `docker build` to work
+
+Environment Variables
+---------------------
+```hcl
+environment_variable {
+  name  = "AWS_ACCOUNT_ID"
+  value = var.aws_account_id
+}
+
+environment_variable {
+  name  = "AWS_REGION"
+  value = var.aws_region
+}
+
+environment_variable {
+  name  = "ECR_REPOSITORY_NAME"
+  value = var.ecr_repository_name
+}
+
+environment_variable {
+  name  = "CONTAINER_NAME"
+  value = "proj2-app"
+}
+```
+
+These variables are available in buildspec.yml as $AWS_ACCOUNT_ID, etc.
+
+Build Artifacts
+---------------
+```hcl
+artifacts {
+  type = "CODEPIPELINE"
+}
+```
+
+Type "CODEPIPELINE" means:
+- Input artifacts come from CodePipeline
+- Output artifacts go back to CodePipeline
+- S3 bucket is managed by the pipeline
+
+Source Configuration
+--------------------
+```hcl
+source {
+  type      = "CODEPIPELINE"
+  buildspec = "buildspec.yml"
+}
+```
+
+- type: Where code comes from (CodePipeline passes it)
+- buildspec: Build instructions file (in repo root)
+
+Build Logs
+----------
+```hcl
+logs_config {
+  cloudwatch_logs {
+    group_name  = "/aws/codebuild/proj2-build"
+    stream_name = "build-log"
+  }
+}
+```
+
+All build output goes to CloudWatch Logs.
+Useful for debugging failed builds.
+
+CodeBuild Pricing
+-----------------
+- BUILD_GENERAL1_SMALL: $0.005 per minute
+- Our build takes ~2 minutes
+- Cost per build: ~$0.01
+
+Very cost-effective!
+
+================================================================================
+6. CODEPIPELINE DEEP DIVE
+================================================================================
+
+What is CodePipeline?
+---------------------
+CodePipeline is an orchestration service. It doesn't actually build or
+deploy - it coordinates other services that do.
+
+Think of it as:
+- A workflow engine
+- A state machine for deployments
+- The conductor that coordinates the orchestra
+
+Pipeline Structure
+------------------
+```hcl
+resource "aws_codepipeline" "proj2_pipeline" {
+  name     = "proj2-pipeline"
+  role_arn = aws_iam_role.codepipeline_role.arn
+
+  artifact_store {
+    location = aws_s3_bucket.codepipeline_artifacts.bucket
+    type     = "S3"
+  }
+
+  stage { ... }  # Source
+  stage { ... }  # Build
+  stage { ... }  # Deploy
+}
+```
+
+**name**: Pipeline identifier
+**role_arn**: IAM role for pipeline operations
+**artifact_store**: Where to store files between stages
+
+Stage 1: Source
+---------------
+```hcl
+stage {
+  name = "Source"
+
+  action {
+    name             = "Source"
+    category         = "Source"
+    owner            = "AWS"
+    provider         = "CodeStarSourceConnection"
+    version          = "1"
+    output_artifacts = ["source_output"]
+
+    configuration = {
+      ConnectionArn    = aws_codestarconnections_connection.github.arn
+      FullRepositoryId = var.github_repository
+      BranchName       = var.github_branch
+    }
+  }
+}
+```
+
+**category**: Type of action (Source, Build, Deploy, Test, etc.)
+**provider**: Which service handles this action
+**output_artifacts**: Name for the output (used by next stage)
+**configuration**: Provider-specific settings
+  - ConnectionArn: The CodeStar connection
+  - FullRepositoryId: "CharithKapuluru/proj2-ecs-fargate"
+  - BranchName: "main"
+
+What happens:
+1. CodePipeline uses CodeStar to access GitHub
+2. Downloads the repository code
+3. Zips it and stores in S3 as "source_output"
+
+Stage 2: Build
+--------------
+```hcl
+stage {
+  name = "Build"
+
+  action {
+    name             = "Build"
+    category         = "Build"
+    owner            = "AWS"
+    provider         = "CodeBuild"
+    input_artifacts  = ["source_output"]
+    output_artifacts = ["build_output"]
+    version          = "1"
+
+    configuration = {
+      ProjectName = aws_codebuild_project.proj2_build.name
+    }
+  }
+}
+```
+
+**input_artifacts**: Uses output from Source stage
+**output_artifacts**: Produces artifacts for Deploy stage
+**ProjectName**: Which CodeBuild project to run
+
+What happens:
+1. CodePipeline starts CodeBuild project
+2. CodeBuild downloads "source_output" from S3
+3. Runs buildspec.yml commands
+4. Uploads "build_output" (imagedefinitions.json) to S3
+
+Stage 3: Deploy
+---------------
+```hcl
+stage {
+  name = "Deploy"
+
+  action {
+    name            = "Deploy"
+    category        = "Deploy"
+    owner           = "AWS"
+    provider        = "ECS"
+    input_artifacts = ["build_output"]
+    version         = "1"
+
+    configuration = {
+      ClusterName = aws_ecs_cluster.proj2_cluster.name
+      ServiceName = aws_ecs_service.proj2_service.name
+      FileName    = "imagedefinitions.json"
+    }
+  }
+}
+```
+
+**provider**: "ECS" - built-in ECS deployment support
+**FileName**: File containing image information
+
+What happens:
+1. CodePipeline reads imagedefinitions.json from build_output
+2. Creates new ECS task definition with new image
+3. Updates ECS service to use new task definition
+4. ECS performs rolling deployment
+
+imagedefinitions.json Format
+----------------------------
+```json
+[
+  {
+    "name": "proj2-app",
+    "imageUri": "501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:e639af5"
+  }
+]
+```
+
+- name: Container name in task definition
+- imageUri: Full ECR image URI with tag
+
+Pipeline Execution States
+-------------------------
+Each stage/action can be in these states:
+- **InProgress**: Currently running
+- **Succeeded**: Completed successfully
+- **Failed**: Encountered an error
+- **Abandoned**: Pipeline was superseded
+
+Pipeline Triggers
+-----------------
+The pipeline runs when:
+1. **Webhook**: GitHub push triggers CodeStar webhook
+2. **Manual**: Click "Release change" in console
+3. **CLI**: `aws codepipeline start-pipeline-execution`
+4. **Schedule**: Can add CloudWatch Events rule
+
+================================================================================
+7. THE BUILDSPEC.YML EXPLAINED
+================================================================================
+
+What is buildspec.yml?
+----------------------
+The buildspec.yml file contains build instructions for CodeBuild.
+It's like a Makefile or script that defines the build process.
+
+Location: Repository root (/proj2-ecs-fargate/buildspec.yml)
+
+Our buildspec.yml
+-----------------
+```yaml
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo "=== Pre-Build Phase ==="
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      - echo "Setting up environment variables..."
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=$COMMIT_HASH
+      - echo "Repository URI is $REPOSITORY_URI"
+      - echo "Image Tag is $IMAGE_TAG"
+
+  build:
+    commands:
+      - echo "=== Build Phase ==="
+      - echo "Building Docker image..."
+      - cd app
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Docker image built successfully"
+
+  post_build:
+    commands:
+      - echo "=== Post-Build Phase ==="
+      - echo "Pushing Docker image to ECR..."
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Docker image pushed successfully"
+      - echo "Creating imagedefinitions.json for ECS deployment..."
+      - cd ..
+      - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - cat imagedefinitions.json
+      - echo "Build completed successfully!"
+
+artifacts:
+  files:
+    - imagedefinitions.json
+```
+
+Structure Breakdown
+-------------------
+
+**version: 0.2**
+- Buildspec syntax version
+- 0.2 is the current recommended version
+
+**phases**
+- Defines build lifecycle stages
+- Each phase runs sequentially
+
+Available Phases:
+1. **install**: Install dependencies
+2. **pre_build**: Setup before build
+3. **build**: Main build commands
+4. **post_build**: After build completes
+
+Phase: pre_build
+----------------
+```yaml
+pre_build:
+  commands:
+    # Login to ECR
+    - aws ecr get-login-password --region $AWS_REGION | docker login ...
+
+    # Set up variables
+    - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_NAME
+    - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+    - IMAGE_TAG=$COMMIT_HASH
+```
+
+**ECR Login**: Required before pushing images
+- `aws ecr get-login-password`: Gets temporary token
+- `docker login`: Authenticates Docker client
+
+**COMMIT_HASH**: Uses git commit hash as image tag
+- $CODEBUILD_RESOLVED_SOURCE_VERSION: Full commit SHA
+- `cut -c 1-7`: First 7 characters (e639af5)
+
+This creates unique, traceable image tags.
+
+Phase: build
+------------
+```yaml
+build:
+  commands:
+    - cd app
+    - docker build -t $REPOSITORY_URI:latest .
+    - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+```
+
+**cd app**: Dockerfile is in /app directory
+**docker build**: Creates the image
+**docker tag**: Adds commit-specific tag
+
+We create two tags:
+- `latest`: Always points to newest build
+- `e639af5`: Specific commit (immutable)
+
+Phase: post_build
+-----------------
+```yaml
+post_build:
+  commands:
+    - docker push $REPOSITORY_URI:latest
+    - docker push $REPOSITORY_URI:$IMAGE_TAG
+    - cd ..
+    - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+```
+
+**docker push**: Upload images to ECR
+**imagedefinitions.json**: Required for ECS deploy action
+
+Important: post_build runs even if build fails!
+Use `on-failure: ABORT` in production to prevent this.
+
+Artifacts Section
+-----------------
+```yaml
+artifacts:
+  files:
+    - imagedefinitions.json
+```
+
+This tells CodeBuild what files to pass to the next stage.
+The imagedefinitions.json file is zipped and uploaded to S3.
+
+Environment Variables Available
+-------------------------------
+CodeBuild provides many built-in variables:
+
+| Variable | Description |
+|----------|-------------|
+| CODEBUILD_BUILD_ID | Unique build identifier |
+| CODEBUILD_BUILD_NUMBER | Build number |
+| CODEBUILD_RESOLVED_SOURCE_VERSION | Git commit hash |
+| CODEBUILD_SRC_DIR | Source directory path |
+| AWS_REGION | Region (from environment config) |
+
+Plus our custom variables:
+- AWS_ACCOUNT_ID
+- ECR_REPOSITORY_NAME
+- CONTAINER_NAME
+
+================================================================================
+8. IAM ROLES AND PERMISSIONS
+================================================================================
+
+Why Two IAM Roles?
+------------------
+We need separate roles for different services:
+
+1. **CodeBuild Role**: What CodeBuild can do
+2. **CodePipeline Role**: What CodePipeline can do
+
+Each service assumes its respective role.
+
+CodeBuild IAM Role
+------------------
+```hcl
+resource "aws_iam_role" "codebuild_role" {
+  name = "proj2-codebuild-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = { Service = "codebuild.amazonaws.com" }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+```
+
+Trust policy allows CodeBuild service to assume this role.
+
+CodeBuild Permissions
+---------------------
+```hcl
+resource "aws_iam_role_policy" "codebuild_policy" {
+  policy = jsonencode({
+    Statement = [
+      {
+        # CloudWatch Logs - write build logs
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:log-group:/aws/codebuild/*"
+      },
+      {
+        # S3 - read input, write output artifacts
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject"
+        ]
+        Resource = "${aws_s3_bucket.codepipeline_artifacts.arn}/*"
+      },
+      {
+        # ECR - get auth token
+        Action = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        # ECR - push/pull images
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
+        ]
+        Resource = "arn:aws:ecr:*:*:repository/proj2-app"
+      }
+    ]
+  })
+}
+```
+
+Permission breakdown:
+- **logs:***: Write build logs to CloudWatch
+- **s3:***: Read/write pipeline artifacts
+- **ecr:GetAuthorizationToken**: Required for `docker login`
+- **ecr:PutImage, etc.**: Push Docker images
+
+CodePipeline IAM Role
+---------------------
+```hcl
+resource "aws_iam_role" "codepipeline_role" {
+  name = "proj2-codepipeline-role"
+
+  assume_role_policy = jsonencode({
+    Statement = [{
+      Principal = { Service = "codepipeline.amazonaws.com" }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+```
+
+CodePipeline Permissions
+------------------------
+```hcl
+policy = jsonencode({
+  Statement = [
+    {
+      # S3 - manage artifacts
+      Action = ["s3:GetObject", "s3:PutObject", ...]
+      Resource = [bucket_arn, bucket_arn/*]
+    },
+    {
+      # CodeStar - use GitHub connection
+      Action = ["codestar-connections:UseConnection"]
+      Resource = connection_arn
+    },
+    {
+      # CodeBuild - start builds
+      Action = ["codebuild:BatchGetBuilds", "codebuild:StartBuild"]
+      Resource = codebuild_project_arn
+    },
+    {
+      # ECS - deploy to cluster
+      Action = ["ecs:*"]
+      Resource = "*"
+    },
+    {
+      # IAM - pass role to ECS
+      Action = ["iam:PassRole"]
+      Resource = "*"
+    }
+  ]
+})
+```
+
+Permission breakdown:
+- **s3:***: Read source, store artifacts
+- **codestar-connections:UseConnection**: Access GitHub
+- **codebuild:***: Start and monitor builds
+- **ecs:***: Update services, register task definitions
+- **iam:PassRole**: Required for ECS to use task execution role
+
+The PassRole Permission
+-----------------------
+Why is `iam:PassRole` needed?
+
+When CodePipeline updates ECS, it creates a new task definition.
+The task definition references the task execution role.
+AWS requires explicit permission to "pass" a role to another service.
+
+Without PassRole:
+```
+CodePipeline: "ECS, use this task definition with role X"
+AWS: "You can't give role X to ECS without iam:PassRole permission"
+```
+
+================================================================================
+9. FILE-BY-FILE BREAKDOWN
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE: terraform/codepipeline.tf
+--------------------------------------------------------------------------------
+
+This single file contains all CI/CD infrastructure.
+
+**Section 1: S3 Artifact Bucket**
+```hcl
+resource "aws_s3_bucket" "codepipeline_artifacts" {
+  bucket = "proj2-codepipeline-artifacts-${var.aws_account_id}"
+}
+```
+- Unique bucket name using account ID
+- Stores pipeline artifacts between stages
+
+Additional S3 configurations:
+- Versioning: Track artifact versions
+- Encryption: AES256 server-side encryption
+- Public access block: Prevent accidental exposure
+
+**Section 2: CodeStar Connection**
+```hcl
+resource "aws_codestarconnections_connection" "github" {
+  name          = "proj2-github-connection"
+  provider_type = "GitHub"
+}
+```
+- Creates OAuth connection to GitHub
+- Requires manual approval after creation
+
+**Section 3: CodeBuild IAM Role**
+- Trust policy for codebuild.amazonaws.com
+- Permissions for logs, S3, ECR
+
+**Section 4: CodePipeline IAM Role**
+- Trust policy for codepipeline.amazonaws.com
+- Permissions for S3, CodeStar, CodeBuild, ECS
+
+**Section 5: CodeBuild Project**
+```hcl
+resource "aws_codebuild_project" "proj2_build" {
+  name          = "proj2-build"
+  build_timeout = 15
+  service_role  = aws_iam_role.codebuild_role.arn
+
+  environment { ... }
+  source { ... }
+  artifacts { ... }
+}
+```
+- 15-minute timeout
+- Small compute instance
+- Docker-enabled
+
+**Section 6: CodePipeline**
+```hcl
+resource "aws_codepipeline" "proj2_pipeline" {
+  name = "proj2-pipeline"
+
+  artifact_store { ... }
+
+  stage { name = "Source" ... }
+  stage { name = "Build" ... }
+  stage { name = "Deploy" ... }
+}
+```
+- Three-stage pipeline
+- S3 artifact storage
+
+**Section 7: CloudWatch Log Group**
+```hcl
+resource "aws_cloudwatch_log_group" "codebuild_logs" {
+  name              = "/aws/codebuild/proj2-build"
+  retention_in_days = 7
+}
+```
+- Build logs destination
+- 7-day retention
+
+--------------------------------------------------------------------------------
+FILE: buildspec.yml
+--------------------------------------------------------------------------------
+
+Located in repository root.
+
+- YAML format for CodeBuild instructions
+- Three phases: pre_build, build, post_build
+- Creates imagedefinitions.json artifact
+- Uses commit hash for image tagging
+
+--------------------------------------------------------------------------------
+FILE: app/Dockerfile
+--------------------------------------------------------------------------------
+
+Updated for AWS ECR public registry:
+```dockerfile
+FROM public.ecr.aws/docker/library/python:3.11-slim
+```
+
+Why? Docker Hub has rate limits for anonymous pulls.
+AWS Public ECR doesn't have this limitation for CodeBuild.
+
+--------------------------------------------------------------------------------
+FILE: terraform/variables.tf (additions)
+--------------------------------------------------------------------------------
+
+Added for Phase G:
+```hcl
+variable "github_repository" {
+  default = "CharithKapuluru/proj2-ecs-fargate"
+}
+
+variable "github_branch" {
+  default = "main"
+}
+```
+
+================================================================================
+10. COMPLETE PIPELINE FLOW
+================================================================================
+
+End-to-End Execution
+--------------------
+
+**Trigger: Developer pushes to GitHub**
+```bash
+git add .
+git commit -m "Update app message"
+git push origin main
+```
+
+**Step 1: GitHub Webhook (Instant)**
+```
+GitHub ──webhook──→ AWS CodeStar Connection
+                          │
+                          ▼
+              "New push to main branch"
+                          │
+                          ▼
+              Start CodePipeline
+```
+
+**Step 2: Source Stage (~30 seconds)**
+```
+CodePipeline ──"get code"──→ CodeStar Connection
+                                    │
+                                    ▼
+                              GitHub API
+                                    │
+                                    ▼
+                         Download repository
+                                    │
+                                    ▼
+                    Zip and upload to S3 (source_output)
+```
+
+**Step 3: Build Stage (~2 minutes)**
+```
+CodePipeline ──"start build"──→ CodeBuild
+                                    │
+                                    ▼
+                         Provision build container
+                                    │
+                                    ▼
+                         Download source_output from S3
+                                    │
+                                    ▼
+                         Run buildspec.yml:
+                           - Login to ECR
+                           - docker build
+                           - docker push
+                           - Create imagedefinitions.json
+                                    │
+                                    ▼
+                         Upload build_output to S3
+```
+
+**Step 4: Deploy Stage (~3-5 minutes)**
+```
+CodePipeline ──"deploy to ECS"──→ ECS Service
+                                       │
+                                       ▼
+                            Read imagedefinitions.json
+                                       │
+                                       ▼
+                            Create new task definition
+                            (proj2-task revision N+1)
+                                       │
+                                       ▼
+                            Update ECS service
+                                       │
+                                       ▼
+                            Rolling deployment:
+                              1. Start new task
+                              2. Wait for healthy
+                              3. Stop old task
+                                       │
+                                       ▼
+                            New version live!
+```
+
+**Total Time: ~5-7 minutes**
+
+Timeline Visualization
+----------------------
+```
+0:00 ─── Push to GitHub
+         │
+0:05 ─── Pipeline started
+         │
+0:10 ─── Source stage: Downloading from GitHub
+         │
+0:30 ─── Source complete, Build starting
+         │
+0:45 ─── CodeBuild container provisioned
+         │
+1:00 ─── Docker build started
+         │
+1:30 ─── Docker build complete
+         │
+2:00 ─── Docker push complete
+         │
+2:15 ─── Build complete, Deploy starting
+         │
+2:30 ─── New task definition created
+         │
+3:00 ─── New ECS task starting
+         │
+4:00 ─── New task passing health checks
+         │
+5:00 ─── Old task draining
+         │
+5:30 ─── Deployment complete
+         │
+         Pipeline status: SUCCEEDED
+```
+
+================================================================================
+11. TESTING YOUR PIPELINE
+================================================================================
+
+Test 1: Manual Pipeline Trigger
+-------------------------------
+```bash
+# Trigger pipeline manually
+aws codepipeline start-pipeline-execution --name proj2-pipeline
+
+# Watch status
+watch -n 10 'aws codepipeline get-pipeline-state --name proj2-pipeline \
+  --query "stageStates[*].{Stage:stageName,Status:latestExecution.status}"'
+```
+
+Test 2: Push a Code Change
+--------------------------
+```bash
+# Make a change to app.py
+cd /path/to/proj2-ecs-fargate
+sed -i 's/Hello from ECS Fargate/Hello from CI-CD Pipeline/' app/app.py
+
+# Commit and push
+git add app/app.py
+git commit -m "Update greeting message"
+git push origin main
+
+# Watch pipeline in console or CLI
+```
+
+Test 3: Verify Deployment
+-------------------------
+```bash
+# Test the endpoint
+curl http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+
+# Expected: New message appears after pipeline completes
+```
+
+Test 4: View Build Logs
+-----------------------
+```bash
+# Tail recent build logs
+aws logs tail /aws/codebuild/proj2-build --since 10m
+
+# Or view in console:
+# CodeBuild → Build projects → proj2-build → Build history
+```
+
+Test 5: Check ECR Images
+------------------------
+```bash
+# List recent images
+aws ecr describe-images --repository-name proj2-app \
+  --query 'imageDetails | sort_by(@, &imagePushedAt) | [-5:].{Tag:imageTags[0],Pushed:imagePushedAt}'
+```
+
+You should see images with commit hash tags.
+
+Test 6: Verify ECS Task
+-----------------------
+```bash
+# Get running task
+aws ecs list-tasks --cluster proj2-cluster --service proj2-service
+
+# Describe task to see image
+aws ecs describe-tasks --cluster proj2-cluster --tasks <task-arn> \
+  --query 'tasks[0].containers[0].image'
+```
+
+The image should match the latest commit hash.
+
+================================================================================
+12. KEY CONCEPTS SUMMARY
+================================================================================
+
+CI/CD Concepts
+--------------
+- **Continuous Integration**: Automated build/test on code changes
+- **Continuous Deployment**: Automated deployment after CI
+- **Pipeline**: Series of stages that process code
+- **Artifact**: Output from one stage, input to next
+
+AWS Services
+------------
+- **CodePipeline**: Orchestrates CI/CD workflow
+- **CodeBuild**: Serverless build environment
+- **CodeStar Connections**: OAuth to external Git providers
+- **S3**: Artifact storage between stages
+
+Key Files
+---------
+- **buildspec.yml**: Build instructions for CodeBuild
+- **imagedefinitions.json**: Image info for ECS deploy
+- **codepipeline.tf**: Infrastructure as Code for pipeline
+
+Pipeline Stages
+---------------
+1. **Source**: Get code from GitHub
+2. **Build**: Create Docker image, push to ECR
+3. **Deploy**: Update ECS service
+
+Triggers
+--------
+- Push to GitHub → Webhook → Pipeline starts
+- Manual: Console or CLI
+- Scheduled: CloudWatch Events (not configured)
+
+Best Practices
+--------------
+1. Use commit hash for image tags (traceability)
+2. Store secrets in Secrets Manager, not buildspec
+3. Use smallest compute type that works
+4. Set reasonable timeouts
+5. Monitor build logs for issues
+
+Cost Summary
+------------
+- CodePipeline: $1/month per active pipeline
+- CodeBuild: ~$0.01 per build (2 minutes × $0.005/min)
+- S3: Minimal (small artifacts)
+- **Total: ~$2-5/month** for light usage
+
+================================================================================
+13. COMMON ISSUES AND SOLUTIONS
+================================================================================
+
+Issue: Pipeline stuck on Source stage
+-------------------------------------
+**Symptoms:**
+- Source stage shows "InProgress" indefinitely
+- No error message
+
+**Causes:**
+- CodeStar connection not approved
+- GitHub webhook not set up
+
+**Solutions:**
+1. Check connection status:
+   ```bash
+   aws codestarconnections get-connection \
+     --connection-arn <connection-arn>
+   ```
+2. Status should be "AVAILABLE", not "PENDING"
+3. If PENDING, approve in AWS Console
+
+Issue: Build fails immediately
+------------------------------
+**Symptoms:**
+- Build stage fails in seconds
+- "YAML_FILE_ERROR" in logs
+
+**Causes:**
+- Invalid buildspec.yml syntax
+- Missing buildspec.yml file
+
+**Solutions:**
+1. Validate YAML syntax online
+2. Check file is in repository root
+3. Common YAML issues:
+   - Indentation (use spaces, not tabs)
+   - Special characters need quoting
+
+Issue: Docker build fails
+-------------------------
+**Symptoms:**
+- "Cannot connect to Docker daemon"
+- "docker: command not found"
+
+**Causes:**
+- privileged_mode not enabled
+- Wrong build image
+
+**Solutions:**
+1. Ensure `privileged_mode = true` in CodeBuild
+2. Use standard CodeBuild image with Docker
+
+Issue: Docker Hub rate limit
+----------------------------
+**Symptoms:**
+- "429 Too Many Requests"
+- "toomanyrequests: pull rate limit exceeded"
+
+**Causes:**
+- Docker Hub limits anonymous pulls
+- CodeBuild doesn't authenticate to Docker Hub
+
+**Solutions:**
+1. Use AWS Public ECR instead:
+   ```dockerfile
+   FROM public.ecr.aws/docker/library/python:3.11-slim
+   ```
+2. Or authenticate to Docker Hub in buildspec
+
+Issue: ECR push fails
+--------------------
+**Symptoms:**
+- "denied: Your authorization token has expired"
+- "no basic auth credentials"
+
+**Causes:**
+- ECR login expired or failed
+- Wrong repository name
+
+**Solutions:**
+1. Ensure ECR login is in pre_build phase
+2. Check repository name matches
+3. Verify CodeBuild role has ECR permissions
+
+Issue: ECS deploy fails
+-----------------------
+**Symptoms:**
+- Deploy stage fails
+- "PermissionError: insufficient permissions"
+
+**Causes:**
+- CodePipeline role missing ECS permissions
+- Missing iam:PassRole permission
+
+**Solutions:**
+1. Add ecs:* permissions to CodePipeline role
+2. Add iam:PassRole permission
+3. Check task execution role is correct
+
+Issue: Deploy succeeds but app unchanged
+----------------------------------------
+**Symptoms:**
+- Pipeline shows success
+- App still shows old version
+
+**Causes:**
+- Wrong container name in imagedefinitions.json
+- Image wasn't actually pushed
+
+**Solutions:**
+1. Check imagedefinitions.json has correct container name
+2. Verify image exists in ECR with correct tag
+3. Check ECS task is using new image
+
+Debugging Checklist
+-------------------
+1. ✓ CodeStar connection is AVAILABLE
+2. ✓ buildspec.yml exists in repo root
+3. ✓ buildspec.yml has valid YAML syntax
+4. ✓ CodeBuild has privileged_mode = true
+5. ✓ Dockerfile uses public.ecr.aws base image
+6. ✓ ECR login happens before docker push
+7. ✓ imagedefinitions.json has correct container name
+8. ✓ CodePipeline role has ECS and PassRole permissions
+9. ✓ Build logs show no errors
+
+================================================================================
+WHAT'S NEXT
+================================================================================
+
+Phase G Completion Checklist
+-----------------------------
+✓ Created S3 bucket for artifacts
+✓ Set up CodeStar GitHub connection
+✓ Created CodeBuild project
+✓ Created CodePipeline with 3 stages
+✓ Written buildspec.yml
+✓ Configured IAM roles
+✓ Tested end-to-end pipeline
+✓ Verified automatic deployment
+
+Current CI/CD Capabilities
+--------------------------
+- Automatic deployment on push to main
+- Docker image built with commit hash tag
+- Rolling deployment to ECS
+- Build logs in CloudWatch
+
+Potential Improvements
+----------------------
+1. **Add Test Stage**: Run pytest before deploy
+2. **Add Approval Stage**: Manual approval for production
+3. **Notifications**: SNS on pipeline failure
+4. **Branch Strategies**: Different pipelines for dev/prod
+5. **Caching**: Speed up builds with Docker layer caching
+
+Potential Future Phases
+-----------------------
+- **Phase H**: Auto-Scaling for ECS
+- **Phase I**: Custom Domain + HTTPS
+- **Phase J**: Cleanup (terraform destroy)
+
+================================================================================
+CONCLUSION
+================================================================================
+
+In Phase G, we successfully:
+
+1. **Built a Complete CI/CD Pipeline**: From code push to production
+   deployment in ~5 minutes, fully automated.
+
+2. **Integrated with GitHub**: Using CodeStar Connections for secure
+   OAuth-based access with webhook triggers.
+
+3. **Automated Docker Builds**: CodeBuild creates and pushes Docker
+   images with commit-hash tags for traceability.
+
+4. **Automated ECS Deployments**: Zero-downtime rolling updates
+   triggered automatically on each push.
+
+5. **Infrastructure as Code**: All CI/CD resources defined in Terraform
+   for reproducibility and version control.
+
+Skills Demonstrated
+-------------------
+- AWS CodePipeline configuration
+- AWS CodeBuild project setup
+- buildspec.yml authoring
+- IAM role design for CI/CD
+- GitHub OAuth integration
+- Docker build automation
+- ECS deployment automation
+
+Professional Value
+------------------
+CI/CD skills are essential for:
+- DevOps Engineer roles
+- Platform Engineer positions
+- SRE (Site Reliability Engineering)
+- Cloud Engineer jobs
+- Full-stack developers
+
+You can now confidently discuss:
+- "I built automated CI/CD pipelines with AWS CodePipeline"
+- "I configured CodeBuild for Docker image builds"
+- "I implemented zero-downtime deployments to ECS"
+- "I used Infrastructure as Code for CI/CD resources"
+- "I integrated GitHub with AWS for automatic deployments"
+
+Architecture Achievement
+------------------------
+```
+Developer                    AWS CI/CD                        Production
+   │                            │                                  │
+   │  git push                  │                                  │
+   │ ─────────────────────────→ │                                  │
+   │                            │  Source: GitHub                  │
+   │                            │  Build: Docker → ECR             │
+   │                            │  Deploy: ECS Update              │
+   │                            │ ────────────────────────────────→│
+   │                            │                                  │
+   │                      ~5 minutes later                         │
+   │                            │                                  │
+   │  New version live!         │                                  │
+   │ ←─────────────────────────────────────────────────────────────│
+```
+
+Resource Count
+--------------
+- Phase A-C: Flask app, Docker, ECR
+- Phase D: 12 resources (VPC, ALB, security)
+- Phase E: 7 resources (IAM, ECS, CloudWatch logs)
+- Phase F: 11 resources (SNS, alarms, dashboard)
+- Phase G: 12 resources (S3, CodeBuild, CodePipeline)
+- **Total: 42 Terraform-managed resources**
+
+What You've Built
+-----------------
+A complete, production-ready deployment pipeline:
+
+1. Developer pushes code
+2. Pipeline automatically builds Docker image
+3. Image pushed to ECR with version tag
+4. ECS service updated with zero downtime
+5. New version live in minutes
+
+This is the same pattern used by companies worldwide for
+continuous deployment of containerized applications.
+
+================================================================================
+END OF PHASE G EXPLANATION
+================================================================================

@@ -63,3 +63,35 @@ variable "image_tag" {
   type        = string
   default     = "v1"
 }
+
+# Phase F: Monitoring Variables
+variable "alert_email" {
+  description = "Email address for CloudWatch alarm notifications"
+  type        = string
+  default     = "kapulurucharith@gmail.com"
+}
+
+variable "cpu_threshold" {
+  description = "CPU utilization threshold for alarm (percentage)"
+  type        = number
+  default     = 80
+}
+
+variable "memory_threshold" {
+  description = "Memory utilization threshold for alarm (percentage)"
+  type        = number
+  default     = 80
+}
+
+# Phase G: CI/CD Variables
+variable "github_repository" {
+  description = "GitHub repository in format owner/repo"
+  type        = string
+  default     = "charithkapuluru/proj2-ecs-fargate"
+}
+
+variable "github_branch" {
+  description = "GitHub branch to track"
+  type        = string
+  default     = "main"
+}

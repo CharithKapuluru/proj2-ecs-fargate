@@ -1,0 +1,1851 @@
+================================================================================
+PHASE E: ECS FARGATE DEPLOYMENT - DETAILED EXPLANATION
+================================================================================
+
+This document provides a comprehensive, beginner-friendly explanation of Phase E,
+where we deployed our containerized Flask application to AWS ECS Fargate.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. Introduction to ECS Fargate
+2. What We Built in Phase E
+3. Understanding IAM for ECS
+4. CloudWatch Logging Setup
+5. ECS Cluster Deep Dive
+6. Task Definitions Explained
+7. ECS Services and Load Balancing
+8. File-by-File Breakdown
+9. The Complete Request Flow
+10. Testing and Verification
+11. Key Concepts Summary
+12. Common Issues and Solutions
+
+================================================================================
+1. INTRODUCTION TO ECS FARGATE
+================================================================================
+
+What is Amazon ECS?
+-------------------
+Amazon Elastic Container Service (ECS) is AWS's fully managed container
+orchestration service. It allows you to run, stop, and manage Docker containers
+on a cluster of EC2 instances or using Fargate (serverless).
+
+Think of ECS as the "brain" that decides:
+- Where to run your containers
+- When to start/stop containers
+- How to distribute traffic across containers
+- How to replace unhealthy containers
+
+What is Fargate?
+----------------
+Fargate is a serverless compute engine for containers. Instead of managing
+EC2 instances yourself, you just define your container requirements and
+AWS handles all the underlying infrastructure.
+
+Traditional ECS (EC2 Launch Type):
+- You provision and manage EC2 instances
+- You decide instance types, sizing, patching
+- You pay for EC2 instances even when idle
+- More control, more responsibility
+
+ECS with Fargate:
+- No servers to manage
+- AWS provisions compute on-demand
+- Pay only for what you use (per vCPU/memory per second)
+- Less control, less responsibility
+
+Why We Chose Fargate:
+---------------------
+1. **Simplicity**: No EC2 instance management
+2. **Cost**: Pay per task, not per instance (good for learning)
+3. **Scaling**: AWS handles compute capacity
+4. **Security**: Isolation at the task level
+5. **Learning Focus**: Concentrate on containers, not infrastructure
+
+Fargate Pricing (us-east-1):
+----------------------------
+- vCPU: $0.04048 per vCPU per hour
+- Memory: $0.004445 per GB per hour
+
+Our configuration (256 CPU units = 0.25 vCPU, 512MB memory):
+- CPU cost: 0.25 * $0.04048 = $0.01012/hour
+- Memory cost: 0.5 * $0.004445 = $0.00222/hour
+- Total: ~$0.0123/hour = ~$9/month (running 24/7)
+
+ECS Core Concepts
+-----------------
+
+1. **Cluster**: Logical grouping of tasks and services
+   - Think of it as a "namespace" for your containers
+   - Can contain multiple services
+   - One cluster per environment is common (dev, staging, prod)
+
+2. **Task Definition**: Blueprint for running containers
+   - Specifies Docker image, CPU, memory
+   - Defines port mappings, environment variables
+   - Similar to a docker-compose.yml
+   - Versioned (revisions)
+
+3. **Task**: Running instance of a task definition
+   - One or more containers running together
+   - Has its own ENI (network interface) in Fargate
+   - Gets its own IP address
+
+4. **Service**: Manages long-running tasks
+   - Ensures desired number of tasks are running
+   - Handles replacement of failed tasks
+   - Integrates with load balancers
+   - Supports rolling deployments
+
+Visual Hierarchy:
+-----------------
+```
+ECS Cluster (proj2-cluster)
+    │
+    └── ECS Service (proj2-service)
+            │
+            ├── Task 1 (running proj2-task:1)
+            │       └── Container: proj2-app
+            │
+            └── Task 2 (if task_count = 2)
+                    └── Container: proj2-app
+```
+
+================================================================================
+2. WHAT WE BUILT IN PHASE E
+================================================================================
+
+Phase E Resources Created
+-------------------------
+Building on Phase D's network infrastructure, we added:
+
+1. **IAM Role** (proj2-ecs-task-execution-role)
+   - Allows ECS to pull images from ECR
+   - Allows ECS to write logs to CloudWatch
+
+2. **CloudWatch Log Group** (/ecs/proj2-app)
+   - Destination for container stdout/stderr
+   - 7-day retention policy
+
+3. **ECS Cluster** (proj2-cluster)
+   - Logical grouping for our service
+
+4. **ECS Task Definition** (proj2-task)
+   - Defines our container configuration
+   - Specifies ECR image to use
+
+5. **ECS Service** (proj2-service)
+   - Runs and maintains our tasks
+   - Integrates with ALB target group
+
+Architecture After Phase E
+--------------------------
+```
+                                    ┌─────────────────────────────────────┐
+                                    │           AWS Cloud                  │
+                                    │                                      │
+┌──────────┐                        │  ┌────────────────────────────────┐ │
+│ Internet │◄───────────────────────┼──┤     Application Load Balancer  │ │
+│  Users   │                        │  │     (proj2-alb from Phase D)   │ │
+└──────────┘                        │  └──────────────┬─────────────────┘ │
+                                    │                 │                    │
+                                    │                 ▼                    │
+                                    │  ┌────────────────────────────────┐ │
+                                    │  │      ECS Cluster               │ │
+                                    │  │      (proj2-cluster)           │ │
+                                    │  │                                │ │
+                                    │  │  ┌──────────────────────────┐ │ │
+                                    │  │  │    ECS Service           │ │ │
+                                    │  │  │    (proj2-service)       │ │ │
+                                    │  │  │                          │ │ │
+                                    │  │  │  ┌────────────────────┐ │ │ │
+                                    │  │  │  │   Fargate Task     │ │ │ │
+                                    │  │  │  │ ┌────────────────┐ │ │ │ │
+                                    │  │  │  │ │  proj2-app     │ │ │ │ │
+                                    │  │  │  │ │  Container     │ │ │ │ │
+                                    │  │  │  │ │  (Flask:8080)  │ │ │ │ │
+                                    │  │  │  │ └────────────────┘ │ │ │ │
+                                    │  │  │  └────────────────────┘ │ │ │
+                                    │  │  └──────────────────────────┘ │ │
+                                    │  └────────────────────────────────┘ │
+                                    │                 │                    │
+                                    │                 ▼                    │
+                                    │  ┌────────────────────────────────┐ │
+                                    │  │   CloudWatch Logs              │ │
+                                    │  │   (/ecs/proj2-app)            │ │
+                                    │  └────────────────────────────────┘ │
+                                    │                 ▲                    │
+                                    │                 │                    │
+                                    │  ┌──────────────┴─────────────────┐ │
+                                    │  │   ECR Repository               │ │
+                                    │  │   (proj2-app:v1 from Phase C)  │ │
+                                    │  └────────────────────────────────┘ │
+                                    └─────────────────────────────────────┘
+```
+
+Resources Summary
+-----------------
+Phase A-C (Application):
+- Flask application with /health endpoint
+- Docker image pushed to ECR (proj2-app:v1)
+
+Phase D (Network):
+- VPC, Subnets, Internet Gateway
+- Security Groups (ALB and ECS)
+- Application Load Balancer
+- Target Group with health checks
+
+Phase E (Compute - NEW):
+- IAM Role for task execution
+- CloudWatch Log Group
+- ECS Cluster
+- ECS Task Definition
+- ECS Service
+
+Total AWS Resources: 19 (12 from Phase D + 7 from Phase E)
+
+================================================================================
+3. UNDERSTANDING IAM FOR ECS
+================================================================================
+
+Why ECS Needs IAM Roles
+-----------------------
+ECS tasks need permissions to interact with other AWS services:
+- Pull Docker images from ECR
+- Write logs to CloudWatch
+- (Optionally) Access other AWS services like S3, DynamoDB
+
+Without proper IAM permissions, your containers can't start!
+
+IAM Roles vs IAM Users
+----------------------
+IAM Users:
+- For humans
+- Have long-term credentials (access key + secret key)
+- Used for CLI access, console login
+
+IAM Roles:
+- For AWS services/applications
+- Have temporary credentials (auto-rotated)
+- Used by EC2, ECS, Lambda, etc.
+- More secure (no long-term secrets)
+
+ECS Task Execution Role
+-----------------------
+This is a special role that ECS uses BEFORE your container starts.
+
+What it does:
+1. Pulls your Docker image from ECR
+2. Creates CloudWatch log streams
+3. Retrieves secrets from Secrets Manager (if configured)
+
+When it's used:
+- Container startup phase only
+- NOT used by your application code
+
+Our Configuration:
+```hcl
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name               = "proj2-ecs-task-execution-role"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_execution_assume_role.json
+}
+```
+
+Trust Policy Explained
+----------------------
+The trust policy defines WHO can assume this role.
+
+```hcl
+data "aws_iam_policy_document" "ecs_task_execution_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+```
+
+In plain English: "The ECS service (ecs-tasks.amazonaws.com) is allowed
+to assume this role."
+
+This means:
+- Your application can't assume this role
+- Other AWS services can't assume this role
+- Only ECS task execution can use it
+
+AWS Managed Policy
+------------------
+Instead of writing permissions manually, we attach an AWS-managed policy:
+
+```hcl
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+```
+
+The AmazonECSTaskExecutionRolePolicy includes:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Permissions breakdown:
+- ecr:GetAuthorizationToken: Get credentials to access ECR
+- ecr:BatchCheckLayerAvailability: Check if image layers exist
+- ecr:GetDownloadUrlForLayer: Get URLs to download layers
+- ecr:BatchGetImage: Pull the image manifest
+- logs:CreateLogStream: Create log stream in CloudWatch
+- logs:PutLogEvents: Write log entries
+
+Task Role vs Execution Role
+---------------------------
+There are TWO types of IAM roles for ECS:
+
+1. **Task Execution Role** (what we created):
+   - Used BY ECS to start your container
+   - Permissions: ECR pull, CloudWatch logs
+   - You don't control when it's used
+
+2. **Task Role** (not created yet):
+   - Used BY your application code
+   - Permissions: Whatever your app needs (S3, DynamoDB, etc.)
+   - Your code can use AWS SDK with this role
+
+For our simple Flask app, we only need the execution role.
+If your app needed to access S3, you'd create a task role too.
+
+================================================================================
+4. CLOUDWATCH LOGGING SETUP
+================================================================================
+
+Why CloudWatch Logs?
+--------------------
+When containers run in Fargate, you can't SSH into them. CloudWatch Logs
+provides visibility into what your application is doing.
+
+Benefits:
+- Centralized logging (all containers in one place)
+- Log retention and archival
+- Search and filter capabilities
+- Alarms and metrics (Phase G)
+- No additional agents to install
+
+Log Group Configuration
+-----------------------
+```hcl
+resource "aws_cloudwatch_log_group" "ecs_logs" {
+  name              = "/ecs/proj2-app"
+  retention_in_days = 7
+
+  tags = {
+    Name = "proj2-ecs-logs"
+  }
+}
+```
+
+Parameters explained:
+- **name**: Log group name (/ecs/ prefix is convention for ECS)
+- **retention_in_days**: How long to keep logs (7 days to minimize costs)
+
+Retention Options:
+- 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653 days
+- Or "never expire" (can get expensive)
+
+We chose 7 days because:
+- Long enough to debug issues
+- Short enough to minimize storage costs
+- Good for learning/development
+
+Log Stream Structure
+--------------------
+Within our log group, ECS creates log streams per task:
+
+```
+/ecs/proj2-app (Log Group)
+    │
+    ├── ecs/proj2-app/abc123def456 (Log Stream for Task 1)
+    │       ├── 2024-01-17 10:00:00 - Starting Flask application
+    │       ├── 2024-01-17 10:00:01 - GET /health - 200 - 1.2ms
+    │       └── ...
+    │
+    └── ecs/proj2-app/xyz789ghi012 (Log Stream for Task 2)
+            └── ...
+```
+
+The stream name format is: ecs/{container-name}/{task-id}
+
+How Logs Get There
+------------------
+1. Your Flask app writes to stdout (print, logger.info)
+2. Docker captures stdout/stderr
+3. Fargate's log driver (awslogs) reads the output
+4. Logs are sent to CloudWatch via HTTPS
+5. CloudWatch stores them in the log group
+
+This is configured in the task definition:
+```json
+"logConfiguration": {
+  "logDriver": "awslogs",
+  "options": {
+    "awslogs-group": "/ecs/proj2-app",
+    "awslogs-region": "us-east-1",
+    "awslogs-stream-prefix": "ecs"
+  }
+}
+```
+
+Log Levels in Our Flask App
+---------------------------
+Our Flask app (app.py) logs requests:
+
+```python
+logger.info(f"{request.method} {request.path} - {response.status_code} - {latency_ms:.1f}ms")
+```
+
+Example log output:
+```
+2024-01-17 10:30:45 - INFO - GET / - 200 - 2.1ms
+2024-01-17 10:30:46 - INFO - GET /health - 200 - 1.0ms
+2024-01-17 10:31:00 - INFO - GET /health - 200 - 0.8ms
+```
+
+Viewing Logs
+------------
+Via AWS Console:
+1. Go to CloudWatch → Log groups
+2. Select /ecs/proj2-app
+3. Click on a log stream
+4. View log events
+
+Via AWS CLI:
+```bash
+# List log streams
+aws logs describe-log-streams \
+  --log-group-name /ecs/proj2-app \
+  --order-by LastEventTime \
+  --descending
+
+# Get recent logs
+aws logs get-log-events \
+  --log-group-name /ecs/proj2-app \
+  --log-stream-name ecs/proj2-app/<task-id>
+
+# Tail logs (follow mode)
+aws logs tail /ecs/proj2-app --follow
+```
+
+Log Insights Queries
+--------------------
+CloudWatch Logs Insights lets you query logs with SQL-like syntax:
+
+```
+# Find all errors
+fields @timestamp, @message
+| filter @message like /ERROR/
+| sort @timestamp desc
+| limit 20
+
+# Count requests by status code
+fields @message
+| parse @message "- * -" as status
+| stats count() by status
+
+# Find slow requests (>100ms)
+fields @message
+| parse @message "- *ms" as latency
+| filter latency > 100
+| sort latency desc
+```
+
+Cost Considerations
+-------------------
+CloudWatch Logs pricing (us-east-1):
+- Ingestion: $0.50 per GB
+- Storage: $0.03 per GB per month
+- Logs Insights queries: $0.005 per GB scanned
+
+For our small app:
+- Minimal log volume (< 1 MB/day)
+- 7-day retention limits storage
+- Estimated cost: < $1/month
+
+================================================================================
+5. ECS CLUSTER DEEP DIVE
+================================================================================
+
+What is an ECS Cluster?
+-----------------------
+An ECS cluster is a logical grouping of tasks and services. It's the
+top-level container for your ECS resources.
+
+Think of it like:
+- A Kubernetes namespace
+- A Docker Swarm cluster
+- A project folder for containers
+
+Cluster Configuration
+---------------------
+```hcl
+resource "aws_ecs_cluster" "proj2_cluster" {
+  name = "proj2-cluster"
+
+  tags = {
+    Name = "proj2-cluster"
+  }
+}
+```
+
+That's it! For Fargate, clusters are simple because there's no
+underlying infrastructure to manage.
+
+For EC2 launch type, you'd also configure:
+- Auto Scaling groups
+- Capacity providers
+- Container instance AMIs
+
+Cluster Capacity Providers
+--------------------------
+Fargate clusters use capacity providers to manage compute:
+
+1. **FARGATE**: Standard on-demand capacity
+   - Immediate availability
+   - Higher cost
+
+2. **FARGATE_SPOT**: Spot capacity (up to 70% discount)
+   - Can be interrupted
+   - Good for fault-tolerant workloads
+
+We use the default FARGATE provider. For cost savings, you could mix:
+```hcl
+# Example (not in our code):
+resource "aws_ecs_cluster_capacity_providers" "example" {
+  cluster_name = aws_ecs_cluster.proj2_cluster.name
+
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    base              = 1
+    weight            = 1
+    capacity_provider = "FARGATE"
+  }
+
+  default_capacity_provider_strategy {
+    weight            = 4
+    capacity_provider = "FARGATE_SPOT"
+  }
+}
+```
+
+This would run 1 base task on FARGATE, additional tasks on SPOT (4:1 ratio).
+
+Cluster Settings
+----------------
+Optional settings we could configure:
+
+1. **Container Insights**: Enhanced monitoring
+   ```hcl
+   setting {
+     name  = "containerInsights"
+     value = "enabled"
+   }
+   ```
+   Adds per-container CPU/memory metrics (additional cost)
+
+2. **Execute Command**: Debug running containers
+   ```hcl
+   configuration {
+     execute_command_configuration {
+       logging = "OVERRIDE"
+       log_configuration {
+         cloud_watch_log_group_name = "/ecs/exec"
+       }
+     }
+   }
+   ```
+   Allows `aws ecs execute-command` to SSH into containers
+
+We kept it simple for learning. Add these for production.
+
+What a Cluster Contains
+-----------------------
+```
+proj2-cluster
+    │
+    ├── Services
+    │   └── proj2-service (our service)
+    │
+    ├── Tasks
+    │   └── Tasks from proj2-service
+    │
+    └── Capacity Providers
+        ├── FARGATE (default)
+        └── FARGATE_SPOT (optional)
+```
+
+Multiple Services Pattern
+-------------------------
+In production, one cluster often runs multiple services:
+
+```
+production-cluster
+    │
+    ├── api-service (backend API)
+    ├── web-service (frontend)
+    ├── worker-service (background jobs)
+    └── scheduler-service (cron jobs)
+```
+
+Benefits:
+- Shared VPC and networking
+- Single place to monitor
+- Easier service discovery
+
+================================================================================
+6. TASK DEFINITIONS EXPLAINED
+================================================================================
+
+What is a Task Definition?
+--------------------------
+A task definition is a JSON document that describes how to run your
+container(s). It's like a blueprint or recipe.
+
+Think of it as:
+- docker run command, but in JSON
+- docker-compose.yml equivalent
+- Pod spec in Kubernetes
+
+Task Definition Configuration
+-----------------------------
+```hcl
+resource "aws_ecs_task_definition" "proj2_task" {
+  family                   = "proj2-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.container_cpu      # 256
+  memory                   = var.container_memory   # 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([...])
+}
+```
+
+Let's break down each parameter:
+
+**family**: Name of the task definition
+- Creates revisions: proj2-task:1, proj2-task:2, etc.
+- Services reference the family, ECS picks latest revision
+
+**network_mode**: How containers get network interfaces
+- "awsvpc": Each task gets its own ENI (required for Fargate)
+- "bridge": Docker bridge networking (EC2 only)
+- "host": Use host's network namespace (EC2 only)
+
+**requires_compatibilities**: Which launch types can use this
+- ["FARGATE"]: Only Fargate
+- ["EC2"]: Only EC2
+- ["FARGATE", "EC2"]: Both
+
+**cpu and memory**: Resource allocation
+- CPU in "CPU units" (1024 = 1 vCPU)
+- Memory in MB
+- Must use valid Fargate combinations
+
+Valid Fargate CPU/Memory Combinations:
+| CPU (units) | Memory (MB)                      |
+|-------------|----------------------------------|
+| 256         | 512, 1024, 2048                  |
+| 512         | 1024, 2048, 3072, 4096           |
+| 1024        | 2048, 3072, 4096, 5120, 6144, 7168, 8192 |
+| 2048        | 4096 - 16384 (1GB increments)    |
+| 4096        | 8192 - 30720 (1GB increments)    |
+
+We use 256 CPU / 512 MB (smallest and cheapest).
+
+**execution_role_arn**: IAM role for ECS to use
+- Pulls image, writes logs
+- Created in iam.tf
+
+Container Definitions
+---------------------
+The heart of the task definition:
+
+```hcl
+container_definitions = jsonencode([
+  {
+    name      = "proj2-app"
+    image     = "${var.aws_account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.ecr_repository_name}:${var.image_tag}"
+    essential = true
+
+    portMappings = [
+      {
+        containerPort = var.container_port
+        protocol      = "tcp"
+      }
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.ecs_logs.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+
+    environment = [
+      {
+        name  = "ENVIRONMENT"
+        value = "production"
+      }
+    ]
+  }
+])
+```
+
+**name**: Container name within the task
+- Referenced by load balancer config
+- Must be unique within task
+
+**image**: Docker image to run
+- Full ECR URL: 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+- Built from variables for flexibility
+
+**essential**: Should task stop if this container fails?
+- true: Task fails if container fails
+- false: Other containers continue (sidecar pattern)
+
+**portMappings**: Expose container ports
+- containerPort: Port inside container (8080)
+- hostPort: Not needed for awsvpc mode
+- protocol: tcp or udp
+
+**logConfiguration**: Where to send logs
+- logDriver: "awslogs" for CloudWatch
+- Options configure the destination
+
+**environment**: Environment variables
+- Key-value pairs
+- Alternative: secrets from Secrets Manager
+
+Multi-Container Task Example
+----------------------------
+Tasks can run multiple containers (not in our setup):
+
+```json
+[
+  {
+    "name": "web",
+    "image": "nginx:latest",
+    "essential": true,
+    "portMappings": [{"containerPort": 80}],
+    "dependsOn": [{"containerName": "app", "condition": "HEALTHY"}]
+  },
+  {
+    "name": "app",
+    "image": "myapp:latest",
+    "essential": true,
+    "portMappings": [{"containerPort": 8080}]
+  },
+  {
+    "name": "log-router",
+    "image": "fluent/fluent-bit:latest",
+    "essential": false,  // Sidecar - can fail without killing task
+    "firelensConfiguration": {...}
+  }
+]
+```
+
+Use cases for multi-container:
+- Nginx reverse proxy + app
+- App + log shipper sidecar
+- App + monitoring agent
+
+Task Definition Revisions
+-------------------------
+Every change creates a new revision:
+
+proj2-task:1 → Initial version
+proj2-task:2 → Updated image tag
+proj2-task:3 → Changed memory
+proj2-task:4 → Added environment variable
+
+Services can reference:
+- Specific revision: proj2-task:3
+- Latest: proj2-task (defaults to latest)
+
+Terraform always uses latest when you apply changes.
+
+================================================================================
+7. ECS SERVICES AND LOAD BALANCING
+================================================================================
+
+What is an ECS Service?
+-----------------------
+An ECS service maintains a specified number of running tasks. It's the
+"manager" that ensures your containers are always running.
+
+Responsibilities:
+- Start tasks to match desired count
+- Replace failed/unhealthy tasks
+- Register tasks with load balancer
+- Handle rolling deployments
+- Integrate with auto-scaling
+
+Service Configuration
+---------------------
+```hcl
+resource "aws_ecs_service" "proj2_service" {
+  name            = "proj2-service"
+  cluster         = aws_ecs_cluster.proj2_cluster.id
+  task_definition = aws_ecs_task_definition.proj2_task.arn
+  desired_count   = var.task_count   # 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_sg.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.proj2_tg.arn
+    container_name   = "proj2-app"
+    container_port   = var.container_port
+  }
+
+  health_check_grace_period_seconds = 60
+
+  depends_on = [aws_lb_listener.http]
+}
+```
+
+Parameter Breakdown:
+
+**name**: Service name (unique within cluster)
+
+**cluster**: Which cluster to deploy to
+
+**task_definition**: Which task definition to run
+- Can use ARN (specific revision) or family (latest)
+
+**desired_count**: Number of tasks to maintain
+- 1 for learning (cost savings)
+- 2+ for production (high availability)
+
+**launch_type**: "FARGATE" or "EC2"
+
+Network Configuration
+---------------------
+```hcl
+network_configuration {
+  subnets          = aws_subnet.public[*].id
+  security_groups  = [aws_security_group.ecs_sg.id]
+  assign_public_ip = true
+}
+```
+
+**subnets**: Where tasks can run
+- Uses both public subnets (us-east-1a, us-east-1b)
+- Tasks are distributed across AZs
+
+**security_groups**: Firewall rules for tasks
+- Only ALB can reach port 8080
+- Outbound allowed for ECR/CloudWatch
+
+**assign_public_ip**: Required for public subnets
+- Tasks need public IPs to reach ECR
+- Alternative: NAT Gateway in private subnets (costs more)
+
+Load Balancer Integration
+-------------------------
+```hcl
+load_balancer {
+  target_group_arn = aws_lb_target_group.proj2_tg.arn
+  container_name   = "proj2-app"
+  container_port   = var.container_port  # 8080
+}
+```
+
+This tells ECS to:
+1. Register each task's IP with the target group
+2. Use container_port for health checks
+3. Deregister tasks when they stop
+
+When a task starts:
+1. ECS assigns it an IP (e.g., 10.0.1.45)
+2. ECS registers 10.0.1.45:8080 with proj2-tg
+3. ALB starts sending health checks
+4. After 2 successful checks, ALB routes traffic
+
+When a task stops:
+1. ECS deregisters from target group
+2. ALB drains connections (30 seconds)
+3. Task is terminated
+
+Health Check Grace Period
+-------------------------
+```hcl
+health_check_grace_period_seconds = 60
+```
+
+This is CRITICAL. It tells ECS:
+"Don't consider health check failures for the first 60 seconds"
+
+Why it matters:
+- Container needs time to start
+- Flask app needs to initialize
+- First health check might fail
+
+Without grace period:
+1. Task starts
+2. ALB health check fails (app not ready)
+3. ECS marks task unhealthy
+4. ECS kills task
+5. ECS starts new task
+6. Infinite loop!
+
+60 seconds gives our Flask app plenty of time to start.
+
+Service Dependencies
+--------------------
+```hcl
+depends_on = [aws_lb_listener.http]
+```
+
+This ensures:
+1. ALB listener is created first
+2. Target group is properly configured
+3. Then service tries to register tasks
+
+Without this, Terraform might try to create the service before
+the ALB is ready, causing registration failures.
+
+Deployment Configuration
+------------------------
+Default deployment settings (we use these):
+- Minimum healthy: 100% (keep all tasks running during deploy)
+- Maximum percent: 200% (can double tasks temporarily)
+
+This means for desired_count=1:
+- During deployment: 1-2 tasks running
+- New task starts, becomes healthy
+- Old task drains and stops
+
+For zero-downtime deploys with 1 task, you need at least 200% max.
+
+Rolling Deployment Example
+--------------------------
+Initial state: 1 task running (v1)
+
+Deploy v2:
+1. ECS starts 1 new task (v2)
+2. Now: 1 v1 + 1 v2 = 2 tasks (200%)
+3. v2 passes health checks
+4. ECS starts draining v1
+5. After 30s drain, v1 stops
+6. Final: 1 task running (v2)
+
+Total deploy time: ~2-3 minutes
+
+================================================================================
+8. FILE-BY-FILE BREAKDOWN
+================================================================================
+
+Let's examine each Phase E Terraform file in detail.
+
+--------------------------------------------------------------------------------
+FILE: terraform/iam.tf
+--------------------------------------------------------------------------------
+
+Purpose: Create IAM role for ECS task execution
+
+```hcl
+# Trust policy: Allow ECS tasks to assume this role
+data "aws_iam_policy_document" "ecs_task_execution_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+```
+
+**data block**: Reads/generates data, doesn't create resources
+- Generates JSON policy document
+- Alternative to writing JSON manually
+- Type-safe and easier to read
+
+**statement**: One permission statement
+- actions: What can be done (assume this role)
+- principals: Who can do it (ECS service)
+
+Generated JSON:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+      }
+    }
+  ]
+}
+```
+
+```hcl
+# Create the IAM role
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name               = "proj2-ecs-task-execution-role"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_execution_assume_role.json
+
+  tags = {
+    Name = "proj2-ecs-task-execution-role"
+  }
+}
+```
+
+**aws_iam_role**: Creates an IAM role
+- name: Role name (visible in AWS Console)
+- assume_role_policy: The trust policy (who can use this role)
+- Uses .json attribute from the data source
+
+```hcl
+# Attach AWS managed policy
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+```
+
+**aws_iam_role_policy_attachment**: Attaches a policy to a role
+- role: Which role to attach to
+- policy_arn: The policy to attach
+
+The ARN is an AWS-managed policy, so we don't create it.
+It includes ECR pull and CloudWatch logs permissions.
+
+--------------------------------------------------------------------------------
+FILE: terraform/cloudwatch.tf
+--------------------------------------------------------------------------------
+
+Purpose: Create CloudWatch log group for container logs
+
+```hcl
+# CloudWatch Log Group for ECS Container Logs
+resource "aws_cloudwatch_log_group" "ecs_logs" {
+  name              = "/ecs/proj2-app"
+  retention_in_days = 7
+
+  tags = {
+    Name = "proj2-ecs-logs"
+  }
+}
+```
+
+**aws_cloudwatch_log_group**: Creates a log group
+- name: Log group path (convention: /ecs/{app-name})
+- retention_in_days: Auto-delete old logs
+
+That's it! Simple but essential for observability.
+
+The log group must exist before ECS tries to write to it.
+Terraform handles the dependency automatically because ecs.tf
+references this resource.
+
+--------------------------------------------------------------------------------
+FILE: terraform/ecs.tf
+--------------------------------------------------------------------------------
+
+Purpose: Create ECS cluster, task definition, and service
+
+**Part 1: Cluster**
+```hcl
+resource "aws_ecs_cluster" "proj2_cluster" {
+  name = "proj2-cluster"
+
+  tags = {
+    Name = "proj2-cluster"
+  }
+}
+```
+
+Simple cluster creation. For Fargate, no additional config needed.
+
+**Part 2: Task Definition**
+```hcl
+resource "aws_ecs_task_definition" "proj2_task" {
+  family                   = "proj2-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.container_cpu
+  memory                   = var.container_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+```
+
+Task-level configuration. The family creates versioned definitions.
+
+```hcl
+  container_definitions = jsonencode([
+    {
+      name      = "proj2-app"
+      image     = "${var.aws_account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.ecr_repository_name}:${var.image_tag}"
+      essential = true
+```
+
+**jsonencode()**: Terraform function to convert HCL to JSON
+- ECS expects JSON for container definitions
+- This approach is cleaner than heredoc strings
+
+**image**: Full ECR URL constructed from variables
+- 501894534533.dkr.ecr.us-east-1.amazonaws.com/proj2-app:v1
+- Changing var.image_tag deploys new version
+
+```hcl
+      portMappings = [
+        {
+          containerPort = var.container_port
+          protocol      = "tcp"
+        }
+      ]
+```
+
+Expose port 8080 (Flask app) to the world.
+
+```hcl
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs_logs.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+```
+
+Send container logs to CloudWatch.
+- References the log group we created
+- Prefix helps identify log streams
+
+```hcl
+      environment = [
+        {
+          name  = "ENVIRONMENT"
+          value = "production"
+        }
+      ]
+    }
+  ])
+```
+
+Pass environment variables to the container.
+Our Flask app could read this:
+```python
+import os
+env = os.environ.get('ENVIRONMENT', 'development')
+```
+
+**Part 3: Service**
+```hcl
+resource "aws_ecs_service" "proj2_service" {
+  name            = "proj2-service"
+  cluster         = aws_ecs_cluster.proj2_cluster.id
+  task_definition = aws_ecs_task_definition.proj2_task.arn
+  desired_count   = var.task_count
+  launch_type     = "FARGATE"
+```
+
+Core service configuration. Links cluster and task definition.
+
+```hcl
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_sg.id]
+    assign_public_ip = true
+  }
+```
+
+Network settings for tasks. References Phase D resources.
+
+```hcl
+  load_balancer {
+    target_group_arn = aws_lb_target_group.proj2_tg.arn
+    container_name   = "proj2-app"
+    container_port   = var.container_port
+  }
+
+  health_check_grace_period_seconds = 60
+
+  depends_on = [aws_lb_listener.http]
+```
+
+Load balancer integration. Container name must match task definition.
+
+--------------------------------------------------------------------------------
+FILE: terraform/outputs.tf (Updated)
+--------------------------------------------------------------------------------
+
+Phase E added these outputs:
+
+```hcl
+output "ecs_cluster_name" {
+  description = "Name of the ECS cluster"
+  value       = aws_ecs_cluster.proj2_cluster.name
+}
+
+output "ecs_service_name" {
+  description = "Name of the ECS service"
+  value       = aws_ecs_service.proj2_service.name
+}
+
+output "cloudwatch_log_group" {
+  description = "CloudWatch log group for ECS containers"
+  value       = aws_cloudwatch_log_group.ecs_logs.name
+}
+```
+
+Useful for:
+- Scripts that interact with ECS
+- Reference in other Terraform modules
+- Quick verification of what was created
+
+================================================================================
+9. THE COMPLETE REQUEST FLOW
+================================================================================
+
+Now let's trace a request from user to container and back:
+
+Step-by-Step Request Flow
+-------------------------
+
+1. **User Request**
+   ```
+   User types: http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+   ```
+
+2. **DNS Resolution**
+   ```
+   Browser → DNS query → Route 53
+   Response: ALB IPs (e.g., 98.94.200.88, 52.20.xxx.xxx)
+   ```
+
+3. **Request Reaches ALB**
+   ```
+   Browser → Internet → Internet Gateway → ALB
+   ALB Security Group: Port 80 from 0.0.0.0/0? ✓ ALLOW
+   ```
+
+4. **ALB Listener Processing**
+   ```
+   Listener on port 80 receives request
+   Default action: Forward to proj2-tg target group
+   ```
+
+5. **Target Group Selection**
+   ```
+   Target group checks registered targets:
+   - 10.0.1.45:8080 (healthy) ✓
+   Selects healthy target for routing
+   ```
+
+6. **Request Forwarded to ECS Task**
+   ```
+   ALB → VPC internal routing → ECS task ENI
+   ECS Security Group: Port 8080 from alb-sg? ✓ ALLOW
+   ```
+
+7. **Container Processing**
+   ```
+   Request reaches container at 10.0.1.45:8080
+   Gunicorn receives → Flask app processes
+   Route: @app.route('/') → hello() function
+   Response: {"message": "Hello from ECS Fargate!", "service": "proj2-app"}
+   ```
+
+8. **Logging**
+   ```
+   Flask logs: "GET / - 200 - 2.1ms"
+   Container stdout → awslogs driver → CloudWatch
+   ```
+
+9. **Response Path**
+   ```
+   Container → ECS Security Group (stateful, response allowed)
+   → ALB → ALB Security Group (stateful, response allowed)
+   → Internet Gateway → Internet → User's browser
+   ```
+
+10. **User Sees**
+    ```json
+    {
+      "message": "Hello from ECS Fargate!",
+      "service": "proj2-app"
+    }
+    ```
+
+Health Check Flow
+-----------------
+Every 30 seconds, ALB performs health checks:
+
+```
+ALB → 10.0.1.45:8080/health
+ECS Task responds: {"status": "ok", "timestamp": "2024-01-17T10:30:00Z"}
+ALB: Status 200, response in 1ms ✓ HEALTHY
+```
+
+If health check fails 3 times:
+```
+ALB marks target unhealthy
+ECS detects unhealthy task
+ECS terminates task
+ECS starts new task
+New task registers with target group
+After 2 healthy checks, traffic resumes
+```
+
+Container Startup Flow
+----------------------
+When ECS starts a new task:
+
+1. **ECS Scheduler**
+   - Finds Fargate capacity
+   - Allocates ENI in selected subnet
+   - Assigns public IP
+
+2. **Image Pull**
+   - Task execution role authenticates to ECR
+   - Pulls proj2-app:v1 image layers
+   - Layers cached for faster subsequent pulls
+
+3. **Container Start**
+   - Docker runs the container
+   - Gunicorn starts
+   - Flask app initializes
+   - Logs: "Starting Flask application on port 8080"
+
+4. **Registration**
+   - ECS registers task IP with target group
+   - 60-second grace period starts
+
+5. **Health Checks**
+   - ALB sends GET /health every 30 seconds
+   - After 2 successes: HEALTHY
+   - Traffic starts flowing
+
+Total startup time: ~45-90 seconds
+
+================================================================================
+10. TESTING AND VERIFICATION
+================================================================================
+
+After deploying Phase E, here's how to verify everything works:
+
+Test 1: Application Endpoint
+----------------------------
+```bash
+curl http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+```
+
+Expected response:
+```json
+{"message":"Hello from ECS Fargate!","service":"proj2-app"}
+```
+
+If you see this, SUCCESS! Your container is running and accessible.
+
+Test 2: Health Check Endpoint
+-----------------------------
+```bash
+curl http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/health
+```
+
+Expected response:
+```json
+{"status":"ok","timestamp":"2024-01-17T10:30:00.123456"}
+```
+
+This confirms the health check endpoint ALB uses is working.
+
+Test 3: ECS Service Status
+--------------------------
+```bash
+aws ecs describe-services \
+  --cluster proj2-cluster \
+  --services proj2-service \
+  --query 'services[0].{status:status,running:runningCount,desired:desiredCount}'
+```
+
+Expected output:
+```json
+{
+  "status": "ACTIVE",
+  "running": 1,
+  "desired": 1
+}
+```
+
+- status: ACTIVE means service is running
+- running = desired means correct number of tasks
+
+Test 4: Target Group Health
+---------------------------
+```bash
+aws elbv2 describe-target-health \
+  --target-group-arn $(terraform output -raw alb_target_group_arn)
+```
+
+Expected output:
+```json
+{
+  "TargetHealthDescriptions": [
+    {
+      "Target": {
+        "Id": "10.0.1.45",
+        "Port": 8080
+      },
+      "HealthCheckPort": "8080",
+      "TargetHealth": {
+        "State": "healthy"
+      }
+    }
+  ]
+}
+```
+
+- State: "healthy" means ALB can route traffic
+
+Test 5: CloudWatch Logs
+-----------------------
+```bash
+aws logs tail /ecs/proj2-app --since 5m
+```
+
+Expected output:
+```
+2024-01-17T10:30:00 Starting Flask application on port 8080
+2024-01-17T10:30:01 GET /health - 200 - 1.2ms
+2024-01-17T10:30:31 GET /health - 200 - 0.8ms
+2024-01-17T10:31:00 GET / - 200 - 2.1ms
+```
+
+This confirms:
+- Container started successfully
+- Health checks are passing
+- Your curl request was logged
+
+Test 6: Task Details
+--------------------
+```bash
+aws ecs list-tasks --cluster proj2-cluster --service proj2-service
+```
+
+Then get task details:
+```bash
+aws ecs describe-tasks \
+  --cluster proj2-cluster \
+  --tasks <task-arn-from-above>
+```
+
+Look for:
+- lastStatus: "RUNNING"
+- healthStatus: "HEALTHY"
+- connectivity: "CONNECTED"
+
+Test 7: Load Testing (Optional)
+-------------------------------
+Simple load test with curl:
+```bash
+for i in {1..10}; do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+done
+```
+
+Expected: Ten "200" responses
+
+Troubleshooting Failed Tests
+----------------------------
+If curl returns 503:
+1. Check ECS service has running tasks
+2. Check target group health
+3. Wait for health check grace period
+
+If curl times out:
+1. Check ALB security group allows port 80
+2. Check ALB is in "active" state
+3. Try from a different network
+
+If curl returns 504:
+1. Check ECS task is running
+2. Check ECS security group allows port 8080 from ALB
+3. Check container is listening on correct port
+
+================================================================================
+11. KEY CONCEPTS SUMMARY
+================================================================================
+
+ECS Fargate Concepts
+--------------------
+- **Fargate**: Serverless compute for containers
+- **Cluster**: Logical grouping of services
+- **Task Definition**: Container blueprint
+- **Task**: Running container instance
+- **Service**: Maintains desired task count
+
+IAM for ECS
+-----------
+- **Task Execution Role**: Used by ECS to start containers
+- **Trust Policy**: Defines who can assume a role
+- **Managed Policies**: AWS-provided permission sets
+
+CloudWatch Logging
+------------------
+- **Log Group**: Container for log streams
+- **Log Stream**: Logs from one task
+- **awslogs driver**: Ships logs to CloudWatch
+
+Networking
+----------
+- **awsvpc mode**: Each task gets an ENI
+- **Public IP**: Required for public subnet + ECR access
+- **Security Groups**: Control traffic to tasks
+
+Load Balancer Integration
+-------------------------
+- **Target Group**: Collection of task IPs
+- **Health Checks**: Verify task health
+- **Grace Period**: Startup time before health checks count
+
+Deployment
+----------
+- **Rolling Update**: Replace tasks one at a time
+- **Desired Count**: How many tasks to run
+- **Min/Max Healthy**: Deployment constraints
+
+Cost Summary (Phase E)
+----------------------
+Running costs (us-east-1, 24/7):
+- ALB: ~$22/month (from Phase D)
+- Fargate (256 CPU, 512MB): ~$9/month
+- CloudWatch Logs: <$1/month
+- **Total: ~$32/month**
+
+To minimize costs:
+- Stop service when not testing
+- Use spot capacity for non-prod
+- Reduce log retention
+
+================================================================================
+12. COMMON ISSUES AND SOLUTIONS
+================================================================================
+
+Issue: Task stuck in PENDING
+-----------------------------
+**Symptoms:**
+- Service shows desired=1, running=0
+- Task status is PENDING
+
+**Common causes:**
+1. No Fargate capacity (rare, retry usually fixes)
+2. Cannot pull image from ECR
+3. Security group blocking ECR access
+
+**Solutions:**
+```bash
+# Check task stopped reason
+aws ecs describe-tasks --cluster proj2-cluster \
+  --tasks <task-arn> \
+  --query 'tasks[0].stoppedReason'
+
+# Check service events
+aws ecs describe-services --cluster proj2-cluster \
+  --services proj2-service \
+  --query 'services[0].events[:5]'
+```
+
+Issue: Task starts then immediately stops
+-----------------------------------------
+**Symptoms:**
+- Task RUNNING briefly, then STOPPED
+- Service keeps restarting tasks
+
+**Common causes:**
+1. Container crashes on startup
+2. Health checks failing before grace period
+3. Wrong port configuration
+
+**Solutions:**
+```bash
+# Check CloudWatch logs for errors
+aws logs tail /ecs/proj2-app --since 10m
+
+# Check stopped reason
+aws ecs describe-tasks --cluster proj2-cluster \
+  --tasks <task-arn> \
+  --query 'tasks[0].{stopped:stoppedReason,exit:containers[0].exitCode}'
+```
+
+Issue: Cannot pull ECR image
+----------------------------
+**Symptoms:**
+- Error: "CannotPullContainerError"
+- "Error response from daemon: pull access denied"
+
+**Common causes:**
+1. Wrong image URL
+2. Task execution role missing ECR permissions
+3. Image doesn't exist in ECR
+
+**Solutions:**
+```bash
+# Verify image exists
+aws ecr describe-images \
+  --repository-name proj2-app \
+  --image-ids imageTag=v1
+
+# Check role has correct policy
+aws iam list-attached-role-policies \
+  --role-name proj2-ecs-task-execution-role
+```
+
+Issue: Health checks failing
+----------------------------
+**Symptoms:**
+- Target group shows "unhealthy"
+- 503 responses from ALB
+
+**Common causes:**
+1. /health endpoint not responding
+2. Wrong port in target group
+3. Security group blocking ALB → task
+
+**Solutions:**
+```bash
+# Check target health details
+aws elbv2 describe-target-health \
+  --target-group-arn <tg-arn>
+
+# Look for "reason" in unhealthy targets
+```
+
+Issue: CloudWatch logs not appearing
+------------------------------------
+**Symptoms:**
+- Log group empty
+- No log streams
+
+**Common causes:**
+1. Log group name mismatch
+2. Task execution role missing logs permissions
+3. Container not producing output
+
+**Solutions:**
+```bash
+# Verify log group exists
+aws logs describe-log-groups \
+  --log-group-name-prefix /ecs/proj2-app
+
+# Check if any log streams exist
+aws logs describe-log-streams \
+  --log-group-name /ecs/proj2-app
+```
+
+Issue: Deployment stuck
+-----------------------
+**Symptoms:**
+- Service shows 2 tasks (old + new)
+- New task not becoming healthy
+
+**Common causes:**
+1. New container crashing
+2. Health check endpoint broken
+3. Resource limits too low
+
+**Solutions:**
+```bash
+# Force new deployment
+aws ecs update-service \
+  --cluster proj2-cluster \
+  --service proj2-service \
+  --force-new-deployment
+
+# Check task events
+aws ecs describe-services --cluster proj2-cluster \
+  --services proj2-service \
+  --query 'services[0].events[:10]'
+```
+
+Issue: High latency/timeouts
+----------------------------
+**Symptoms:**
+- Requests taking >5 seconds
+- Occasional 504 errors
+
+**Common causes:**
+1. Container under-resourced (CPU/memory)
+2. Only 1 task, overwhelmed
+3. Application bug
+
+**Solutions:**
+- Increase CPU/memory in variables.tf
+- Increase task_count
+- Profile application code
+
+Debugging Checklist
+-------------------
+1. ✓ ECS service exists and is ACTIVE
+2. ✓ Desired count matches running count
+3. ✓ Task status is RUNNING
+4. ✓ Target group shows healthy targets
+5. ✓ CloudWatch logs show application startup
+6. ✓ Health endpoint returns 200
+7. ✓ Main endpoint returns expected JSON
+
+================================================================================
+WHAT'S NEXT: PHASE F AND BEYOND
+================================================================================
+
+Phase E Completion Checklist
+-----------------------------
+✓ Created IAM role for ECS task execution
+✓ Set up CloudWatch log group
+✓ Created ECS cluster
+✓ Defined task definition with container config
+✓ Deployed ECS service with ALB integration
+✓ Verified application is accessible
+✓ Confirmed logs flowing to CloudWatch
+
+Current State
+-------------
+- Full application stack deployed
+- Accessible via ALB URL
+- Logs visible in CloudWatch
+- Health checks passing
+
+What Could Come Next
+--------------------
+
+**Phase F: CI/CD Pipeline**
+- GitHub Actions for automated deployment
+- Build and push to ECR on commit
+- Automated task definition updates
+- Blue/green or rolling deployments
+
+**Phase G: Monitoring & Alerting**
+- CloudWatch alarms for errors
+- CPU/memory utilization alerts
+- Dashboard for key metrics
+- SNS notifications
+
+**Phase H: Cleanup**
+- terraform destroy to remove all resources
+- Cost optimization review
+- Documentation updates
+
+================================================================================
+CONCLUSION
+================================================================================
+
+In Phase E, we successfully:
+
+1. **Learned ECS Fargate**: Understood serverless container orchestration,
+   including clusters, task definitions, and services.
+
+2. **Configured IAM**: Set up the task execution role with appropriate
+   permissions for ECR and CloudWatch.
+
+3. **Enabled Observability**: Created CloudWatch log group for centralized
+   logging from our containerized application.
+
+4. **Deployed Containers**: Created ECS cluster, task definition, and
+   service to run our Flask application.
+
+5. **Integrated with ALB**: Connected the ECS service to the Application
+   Load Balancer created in Phase D for traffic distribution.
+
+6. **Verified Deployment**: Tested endpoints, health checks, and logs
+   to confirm successful deployment.
+
+Skills Demonstrated
+-------------------
+- AWS ECS Fargate deployment
+- IAM role configuration for containers
+- CloudWatch Logs integration
+- Task definition authoring
+- Service deployment and management
+- Load balancer integration
+- Terraform for container orchestration
+
+Professional Value
+------------------
+This phase demonstrates skills applicable to:
+- Container Engineer roles
+- DevOps Engineer positions
+- Cloud Engineer jobs
+- Site Reliability Engineering (SRE)
+- Platform Engineering roles
+
+You can now confidently discuss:
+- "I deployed containerized applications to ECS Fargate"
+- "I configured IAM roles for secure container operations"
+- "I set up centralized logging with CloudWatch"
+- "I integrated ECS services with Application Load Balancers"
+- "I used Terraform to manage container infrastructure"
+
+Architecture Achievement
+------------------------
+```
+Internet → ALB → ECS Fargate → Flask Container
+                     ↓
+              CloudWatch Logs
+                     ↑
+                ECR Image
+```
+
+This is a production-ready architecture pattern used by companies
+worldwide for running containerized web applications.
+
+Resource Inventory
+------------------
+Total resources created across all phases:
+- Phase A-C: Flask app, Docker image, ECR repository
+- Phase D: 12 resources (VPC, ALB, security groups)
+- Phase E: 7 resources (IAM, CloudWatch, ECS)
+- Total infrastructure: 19 Terraform-managed resources
+
+Next Steps
+----------
+Your containerized application is now running in AWS! Consider:
+- Adding CI/CD for automated deployments (Phase F)
+- Setting up monitoring and alerts (Phase G)
+- Cleaning up resources when done (Phase H)
+- Experimenting with scaling (increase task_count)
+
+================================================================================
+END OF PHASE E EXPLANATION
+================================================================================

@@ -1,0 +1,43 @@
+version: 0.2
+
+# AWS CodeBuild buildspec for building Docker image and pushing to ECR
+# This file is used by CodePipeline to build and deploy the application
+
+phases:
+  pre_build:
+    commands:
+      - echo "=== Pre-Build Phase ==="
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+      - echo "Setting up environment variables..."
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - echo "Repository URI: $REPOSITORY_URI"
+      - echo "Image Tag: $IMAGE_TAG"
+
+  build:
+    commands:
+      - echo "=== Build Phase ==="
+      - echo "Building Docker image..."
+      - cd app
+      - docker build -t $REPOSITORY_URI:latest .
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Docker image built successfully"
+
+  post_build:
+    commands:
+      - echo "=== Post-Build Phase ==="
+      - echo "Pushing Docker image to ECR..."
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Docker image pushed successfully"
+      - echo "Creating imagedefinitions.json for ECS deployment..."
+      - cd ..
+      - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - cat imagedefinitions.json
+      - echo "Build completed successfully!"
+
+artifacts:
+  files:
+    - imagedefinitions.json

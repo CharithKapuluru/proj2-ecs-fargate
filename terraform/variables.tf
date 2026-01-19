@@ -87,7 +87,7 @@ variable "memory_threshold" {
 variable "github_repository" {
   description = "GitHub repository in format owner/repo"
   type        = string
-  default     = "charithkapuluru/proj2-ecs-fargate"
+  default     = "CharithKapuluru/proj2-ecs-fargate"
 }
 
 variable "github_branch" {

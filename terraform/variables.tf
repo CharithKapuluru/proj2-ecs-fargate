@@ -95,3 +95,16 @@ variable "github_branch" {
   type        = string
   default     = "main"
 }
+
+# Phase H: Auto-Scaling Variables
+variable "min_task_count" {
+  description = "Minimum number of ECS tasks"
+  type        = number
+  default     = 1
+}
+
+variable "max_task_count" {
+  description = "Maximum number of ECS tasks"
+  type        = number
+  default     = 4
+}

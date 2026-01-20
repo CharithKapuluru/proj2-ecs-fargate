@@ -58,7 +58,19 @@ resource "aws_ecs_service" "proj2_service" {
   cluster         = aws_ecs_cluster.proj2_cluster.id
   task_definition = aws_ecs_task_definition.proj2_task.arn
   desired_count   = var.task_count
-  launch_type     = "FARGATE"
+
+  # Use capacity provider strategy instead of launch_type for Fargate Spot
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 4
+    base              = 0
+  }
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+    base              = 1  # At least 1 task on regular Fargate for reliability
+  }
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
@@ -73,6 +85,11 @@ resource "aws_ecs_service" "proj2_service" {
   }
 
   health_check_grace_period_seconds = 60
+
+  # Ignore desired_count changes from auto-scaling
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 
   depends_on = [aws_lb_listener.http]
 

@@ -79,3 +79,19 @@ output "codestar_connection_status" {
   description = "CodeStar connection status"
   value       = aws_codestarconnections_connection.github.connection_status
 }
+
+# Phase H: Auto-Scaling Outputs
+output "autoscaling_min_capacity" {
+  description = "Minimum ECS task count"
+  value       = var.min_task_count
+}
+
+output "autoscaling_max_capacity" {
+  description = "Maximum ECS task count"
+  value       = var.max_task_count
+}
+
+output "capacity_provider_strategy" {
+  description = "ECS capacity provider strategy (Fargate Spot enabled)"
+  value       = "FARGATE_SPOT (4:1 ratio with FARGATE)"
+}

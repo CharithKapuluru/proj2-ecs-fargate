@@ -1,128 +1,35 @@
 ================================================================================
-PHASE A: LOCAL APP + DOCKER IMAGE - DETAILED EXPLANATION
+PHASE A: LOCAL APP + DOCKER IMAGE
 ================================================================================
 
-PROJECT: AWS ECS Fargate Deployment with Terraform
-PHASE: A - Create Flask Application and Docker Image
-DATE: January 16, 2026
-AUTHOR: Charith Kapuluru
+Goal: Create a Flask web app and package it as a Docker container.
+
+What we're building:
+- Homepage endpoint (/) - returns JSON greeting
+- Health check endpoint (/health) - used by AWS ALB to verify app is running
+- Request logging with latency tracking
 
 ================================================================================
-TABLE OF CONTENTS
-================================================================================
-1. The Big Picture - What Phase A Accomplishes
-2. Prerequisites
-3. Step-by-Step Breakdown
-   3.1 Create Project Structure
-   3.2 Create Flask Application (app.py)
-   3.3 Create Requirements File
-   3.4 Create Dockerfile
-   3.5 Create .gitignore
-   3.6 Build Docker Image
-   3.7 Test Docker Container
-   3.8 Git Commit
-4. Technical Deep Dives
-   4.1 How Flask Works
-   4.2 How Docker Works
-   4.3 How Gunicorn Works
-5. Troubleshooting Common Issues
-6. Summary and Next Steps
-
-================================================================================
-1. THE BIG PICTURE - WHAT PHASE A ACCOMPLISHES
+PROJECT STRUCTURE
 ================================================================================
 
-Goal:
------
-Create a simple web application and package it into a Docker container that
-can run anywhere - on your laptop, in AWS, or any cloud provider.
+proj2-ecs-fargate/
+├── app/
+│   ├── app.py              # Flask application
+│   ├── requirements.txt    # Python dependencies
+│   └── Dockerfile          # Container build instructions
+├── terraform/              # Infrastructure code (later phases)
+└── .gitignore
 
-Real-World Analogy:
--------------------
-Think of building a food truck:
-- Flask app = Your restaurant's recipe/menu
-- Docker = The food truck that packages everything (kitchen, ingredients, chef)
-- Your laptop = Where you build and test the food truck
-- AWS (later phases) = The parking lot where customers will find your truck
-
-What We're Building:
---------------------
-A minimal Flask web application with:
-- Homepage endpoint (/) that returns a JSON greeting
-- Health check endpoint (/health) for AWS to monitor the app
-- Request logging with timing data (observability)
-
-Why Docker?
------------
-Docker ensures your app runs the same way everywhere:
-- Works on your Mac ✓
-- Works in AWS ✓
-- Works on your teammate's Windows laptop ✓
-- No "it works on my machine" problems
+Commands to create:
+  mkdir -p proj2-ecs-fargate/app
+  mkdir -p proj2-ecs-fargate/terraform
+  cd proj2-ecs-fargate
 
 ================================================================================
-2. PREREQUISITES
+FILE 1: app/app.py
 ================================================================================
 
-Software Required:
-------------------
-✓ Docker Desktop (already running on your Mac)
-✓ Text editor (VS Code, Sublime, etc.)
-✓ Terminal access
-✓ Git (for version control)
-
-Skills Needed:
---------------
-- Basic command line knowledge
-- Understanding of what a web server does
-- Familiarity with files and directories
-
-No prior Docker or Flask experience required - this guide explains everything!
-
-================================================================================
-3. STEP-BY-STEP BREAKDOWN
-================================================================================
-
-3.1 CREATE PROJECT STRUCTURE
------------------------------
-
-Command:
---------
-mkdir -p proj2-ecs-fargate/app
-mkdir -p proj2-ecs-fargate/terraform
-cd proj2-ecs-fargate
-
-What This Does:
----------------
-Creates the directory structure for our project.
-
-Directory Layout:
------------------
-proj2-ecs-fargate/          ← Root project directory
-├── app/                    ← Application code and Dockerfile
-│   ├── app.py             ← (created next)
-│   ├── requirements.txt   ← (created next)
-│   └── Dockerfile         ← (created next)
-└── terraform/              ← Infrastructure code (Phase D)
-
-Why This Structure?
--------------------
-Separation of concerns:
-- app/ = Application code (what the app does)
-- terraform/ = Infrastructure code (how to deploy it)
-
-This is a professional standard - keeps code organized and maintainable.
-
-
-3.2 CREATE FLASK APPLICATION (app.py)
---------------------------------------
-
-File Location:
---------------
-proj2-ecs-fargate/app/app.py
-
-Full Code:
-----------
 ```python
 import time
 import logging
@@ -131,7 +38,6 @@ from flask import Flask, jsonify, request, g
 
 app = Flask(__name__)
 
-# Configure logging for CloudWatch (stdout)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -139,571 +45,88 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 @app.before_request
 def start_timer():
-    """Record request start time for latency calculation."""
     g.start_time = time.time()
-
 
 @app.after_request
 def log_request(response):
-    """Log every request with method, path, status, and latency."""
     latency_ms = (time.time() - g.start_time) * 1000
-    logger.info(
-        f"{request.method} {request.path} - {response.status_code} - {latency_ms:.1f}ms"
-    )
+    logger.info(f"{request.method} {request.path} - {response.status_code} - {latency_ms:.1f}ms")
     return response
-
 
 @app.route('/')
 def hello():
-    """Main endpoint."""
-    return jsonify({
-        "message": "Hello from ECS Fargate!",
-        "service": "proj2-app"
-    })
-
+    return jsonify({"message": "Hello from ECS Fargate!", "service": "proj2-app"})
 
 @app.route('/health')
 def health():
-    """Health check endpoint for ALB."""
-    return jsonify({
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
+    return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
 
 if __name__ == '__main__':
     logger.info('Starting Flask application on port 8080')
     app.run(host='0.0.0.0', port=8080)
 ```
 
-Code Breakdown - Line by Line:
--------------------------------
+Key points:
+- @app.before_request / @app.after_request: Run code before/after every request
+- g object: Flask's request-scoped storage (data persists within one request)
+- /health endpoint: AWS ALB calls this every 30 seconds to check if container is alive
+- Logs go to stdout so CloudWatch can capture them
 
-Lines 1-4: Import Statements
-```python
-import time
-import logging
-from datetime import datetime
-from flask import Flask, jsonify, request, g
-```
+================================================================================
+FILE 2: app/requirements.txt
+================================================================================
 
-What each import does:
-- time: For measuring how long requests take
-- logging: For printing logs that CloudWatch will capture
-- datetime: For generating timestamps
-- flask: The web framework
-
-Lines 6-13: Logging Configuration
-```python
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-```
-
-What this does:
-- level=logging.INFO: Log informational messages (not just errors)
-- format: How log messages look
-  Example: "2026-01-16 17:30:45 - INFO - GET / - 200 - 1.2ms"
-- logger object: Used to write log messages
-
-Why we need this:
-When running in AWS, these logs go to CloudWatch. Without logging, you can't
-debug problems or monitor your app.
-
-Lines 16-19: Request Timer (Start)
-```python
-@app.before_request
-def start_timer():
-    """Record request start time for latency calculation."""
-    g.start_time = time.time()
-```
-
-What @app.before_request means:
-"Run this function BEFORE every request"
-
-What it does:
-Starts a stopwatch before processing the request.
-
-Flow:
-1. User visits http://your-app/
-2. Flask runs start_timer()
-3. Stores current time in g.start_time
-4. Then runs the actual endpoint (hello or health)
-
-What is 'g'?
-Flask's global object - data that persists during one request but not between
-requests. Think of it as a temporary notepad.
-
-Lines 22-30: Request Logger (End)
-```python
-@app.after_request
-def log_request(response):
-    """Log every request with method, path, status, and latency."""
-    latency_ms = (time.time() - g.start_time) * 1000
-    logger.info(
-        f"{request.method} {request.path} - {response.status_code} - {latency_ms:.1f}ms"
-    )
-    return response
-```
-
-What @app.after_request means:
-"Run this function AFTER every request"
-
-What it does:
-Stops the stopwatch and logs the request details.
-
-Calculation:
-- time.time() = Current time (seconds since 1970)
-- g.start_time = Time when request started
-- Difference = How long the request took
-- * 1000 = Convert seconds to milliseconds
-
-Example log output:
-"GET /health - 200 - 2.4ms"
- │    │       │     │
- │    │       │     └── Took 2.4 milliseconds
- │    │       └──────── HTTP status (200 = success)
- │    └──────────────── Which endpoint
- └───────────────────── HTTP method
-
-Why this matters:
-This is "observability" - you can see:
-- What endpoints are being called
-- Whether requests succeed (200) or fail (500)
-- How fast your app responds (performance monitoring)
-
-Lines 33-40: Homepage Endpoint
-```python
-@app.route('/')
-def hello():
-    """Main endpoint."""
-    return jsonify({
-        "message": "Hello from ECS Fargate!",
-        "service": "proj2-app"
-    })
-```
-
-What @app.route('/') means:
-"When someone visits the homepage, run this function"
-
-What it returns:
-JSON response:
-{
-  "message": "Hello from ECS Fargate!",
-  "service": "proj2-app"
-}
-
-Why JSON?
-- Easy for other programs to read
-- Industry standard for APIs
-- Works well with modern web/mobile apps
-
-Test it:
-curl http://localhost:8080/
-Returns: {"message":"Hello from ECS Fargate!","service":"proj2-app"}
-
-Lines 43-50: Health Check Endpoint
-```python
-@app.route('/health')
-def health():
-    """Health check endpoint for ALB."""
-    return jsonify({
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat()
-    })
-```
-
-What this does:
-Returns a simple "I'm alive" message.
-
-Why we need it:
-AWS Application Load Balancer (ALB) will call this endpoint every 30 seconds:
-- If it returns 200: ALB thinks "container is healthy"
-- If it fails or returns 500: ALB thinks "container is broken, restart it"
-
-Example response:
-{
-  "status": "ok",
-  "timestamp": "2026-01-16T23:30:45.123456"
-}
-
-The timestamp helps debug issues - you can see when the app last responded.
-
-Lines 53-55: Development Server
-```python
-if __name__ == '__main__':
-    logger.info('Starting Flask application on port 8080')
-    app.run(host='0.0.0.0', port=8080)
-```
-
-What this does:
-If you run "python app.py" directly, start Flask's development server.
-
-Parameters:
-- host='0.0.0.0': Listen on all network interfaces (not just localhost)
-- port=8080: Listen on port 8080
-
-Important:
-This is for LOCAL testing only. In production (Docker), we use gunicorn instead.
-
-
-How Flask Works - Deep Dive:
------------------------------
-
-Flask is a "web framework" - it handles the boring parts of building a web app.
-
-Without Flask, you'd need to:
-1. Open a network socket
-2. Parse HTTP requests
-3. Route URLs to functions
-4. Format HTTP responses
-5. Handle errors
-
-Flask does all this for you!
-
-Request Flow:
--------------
-1. User's browser sends request:
-   GET / HTTP/1.1
-   Host: localhost:8080
-
-2. Flask receives it and:
-   - Runs @app.before_request (start_timer)
-   - Matches URL "/" to hello()
-   - Runs hello()
-   - Gets return value: {"message": "..."}
-
-3. Flask converts to HTTP response:
-   HTTP/1.1 200 OK
-   Content-Type: application/json
-
-   {"message":"Hello from ECS Fargate!","service":"proj2-app"}
-
-4. Flask runs @app.after_request (log_request)
-
-5. Sends response to browser
-
-
-3.3 CREATE REQUIREMENTS FILE
------------------------------
-
-File Location:
---------------
-proj2-ecs-fargate/app/requirements.txt
-
-Content:
---------
 flask==3.0.0
 gunicorn==21.2.0
 
-What This File Is:
-------------------
-A "shopping list" of Python packages your app needs.
+Why gunicorn?
+- Flask's built-in server is for development only (single-threaded, crashes easily)
+- Gunicorn is production-ready (handles multiple requests, auto-restarts workers)
 
-Format:
--------
-package_name==version_number
+================================================================================
+FILE 3: app/Dockerfile
+================================================================================
 
-Why specify versions?
-- Reproducibility: Same versions = same behavior
-- Safety: Prevents automatic upgrades that might break your app
-
-Package Breakdown:
-------------------
-
-1. flask==3.0.0
-   - The web framework
-   - Version 3.0.0 (latest stable as of Dec 2023)
-   - Used by: Your application code
-
-2. gunicorn==21.2.0
-   - Production WSGI server
-   - Version 21.2.0
-   - Used by: Docker to run your app in production
-
-What is WSGI?
--------------
-WSGI (Web Server Gateway Interface) is the standard for Python web apps.
-
-Flask's built-in server:
-- Good for: Development/testing
-- Bad for: Production (single-threaded, slow, crashes easily)
-
-Gunicorn:
-- Good for: Production
-- Handles multiple requests simultaneously
-- Automatically restarts crashed workers
-- Battle-tested by thousands of companies
-
-Analogy:
-Flask dev server = A food cart (one person serving)
-Gunicorn = A restaurant (multiple waiters, kitchen staff, managers)
-
-
-3.4 CREATE DOCKERFILE
-----------------------
-
-File Location:
---------------
-proj2-ecs-fargate/app/Dockerfile
-
-Full Content:
--------------
 ```dockerfile
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY app.py .
 
-# Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser
 USER appuser
 
-# Expose the application port
 EXPOSE 8080
 
-# Run with gunicorn (production-ready)
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
 ```
 
-What is a Dockerfile?
----------------------
-A recipe for building a Docker image. Each line is an instruction.
+Line by line:
+- FROM: Start with Python 3.11 base image (slim = smaller size)
+- WORKDIR: Set working directory to /app
+- COPY requirements.txt first: Better layer caching (dependencies change less often)
+- RUN pip install: Install Flask and gunicorn
+- COPY app.py: Add application code
+- useradd + USER: Run as non-root user (security best practice)
+- EXPOSE: Document that container uses port 8080
+- CMD: Start gunicorn with 2 workers, logging to stdout
 
-Think of it like IKEA furniture instructions:
-- Step 1: Take this piece
-- Step 2: Attach that piece
-- Step 3: Screw these together
-
-Dockerfile = Instructions for building your app's container
-
-Line-by-Line Breakdown:
-------------------------
-
-Line 1: FROM python:3.11-slim
-```dockerfile
-FROM python:3.11-slim
-```
-
-What it does:
-Start with a pre-built image that has Python 3.11 installed.
-
-What is "python:3.11-slim"?
-- python: Python programming language
-- 3.11: Python version
-- slim: Smaller version (minimal packages)
-
-Size comparison:
-- python:3.11 (full): ~1000 MB
-- python:3.11-slim: ~180 MB
-- python:3.11-alpine: ~50 MB (but harder to use)
-
-Why slim?
-- Faster downloads
-- Less disk space
-- Fewer security vulnerabilities
-- Still has everything we need
-
-Where does this image come from?
-Docker Hub (public repository of images)
-Link: https://hub.docker.com/_/python
-
-Line 3: WORKDIR /app
-```dockerfile
-WORKDIR /app
-```
-
-What it does:
-Create directory /app and switch to it.
-
-Equivalent commands:
-mkdir /app
-cd /app
-
-All subsequent commands run from /app.
-
-Why /app?
-Convention - most Docker containers use /app or /usr/src/app.
-
-Lines 5-7: Install Dependencies
-```dockerfile
-# Install dependencies first (better layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-```
-
-What COPY does:
-Copy files from your Mac into the Docker image.
-
-Syntax: COPY <source> <destination>
-- Source: requirements.txt (on your Mac)
-- Destination: . (current directory in image = /app)
-
-Result:
-/app/requirements.txt now exists inside the image.
-
-What RUN does:
-Execute a command during image build.
-
-Command: pip install --no-cache-dir -r requirements.txt
-- pip: Python package installer
-- install: Install packages
-- --no-cache-dir: Don't save downloaded files (saves space)
-- -r requirements.txt: Read package list from file
-
-Result:
-Flask and gunicorn are now installed in the image.
-
-Why copy requirements.txt first?
-DOCKER LAYER CACHING!
-
-Docker layers are cached. If nothing changes, Docker reuses the cached layer.
-
-Scenario 1 (requirements.txt copied first):
-- You change app.py
-- Docker sees: requirements.txt hasn't changed
-- Docker reuses cached layer (fast!)
-- Only rebuilds layers after COPY app.py
-
-Scenario 2 (app.py copied first):
-- You change app.py
-- Docker sees: app.py changed
-- Docker rebuilds everything including pip install (slow!)
-
-Time savings:
-- First way: 2 seconds
-- Second way: 30 seconds
-
-Lines 9-10: Copy Application
-```dockerfile
-# Copy application code
-COPY app.py .
-```
-
-Copies your Flask app into the image.
-
-Result: /app/app.py exists in the image
-
-Lines 12-14: Create Non-Root User
-```dockerfile
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser
-USER appuser
-```
-
-What useradd does:
-Create a new user named "appuser"
-
-Parameters:
-- --create-home: Give them a home directory (/home/appuser)
-- --shell /bin/bash: Set their default shell
-
-What USER does:
-Switch to that user. All subsequent commands run as "appuser".
-
-Why do this?
-SECURITY!
-
-By default, Docker containers run as root (superuser).
-
-If a hacker exploits your app:
-- Running as root: They have full control over the container
-- Running as appuser: They have limited access
-
-Real-world analogy:
-- root = Admin account with full computer access
-- appuser = Standard account with restricted access
-
-Best practice: Always run containers as non-root users.
-
-Line 17: EXPOSE 8080
-```dockerfile
-EXPOSE 8080
-```
-
-What it does:
-Document that this container listens on port 8080.
-
-Important: This is DOCUMENTATION only. It doesn't actually open the port.
-
-To actually expose the port:
-docker run -p 8080:8080 ...
-
-Lines 19-20: CMD
-```dockerfile
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
-```
-
-What CMD does:
-Specify the command to run when the container starts.
-
-Format: JSON array
-["command", "arg1", "arg2", "arg3"]
-
-Full command:
-gunicorn --bind 0.0.0.0:8080 --workers 2 --access-logfile - --error-logfile - app:app
-
-Parameter breakdown:
-- gunicorn: The program to run
+Gunicorn flags:
 - --bind 0.0.0.0:8080: Listen on all interfaces, port 8080
-- --workers 2: Run 2 worker processes
+- --workers 2: Run 2 worker processes (can handle 2 requests in parallel)
 - --access-logfile -: Log requests to stdout (- means stdout)
-- --error-logfile -: Log errors to stdout
-- app:app: Run the "app" object from app.py
+- app:app: module:application (app.py file, app object)
 
-What are workers?
-Each worker is a separate process that can handle requests.
+================================================================================
+FILE 4: .gitignore
+================================================================================
 
-With 2 workers:
-- Worker 1 handles request from User A
-- Worker 2 handles request from User B
-- Both run simultaneously (parallel)
-
-With 1 worker:
-- Worker handles request from User A
-- User B waits
-- Sequential, slow
-
-Why 2 workers?
-- We allocated 256 CPU / 512 MB RAM for Fargate
-- 2 workers is optimal for these resources
-- More workers = more memory needed
-
-Why log to stdout (-)?
-Docker captures stdout and sends to CloudWatch.
-
-If we logged to a file:
-- File stays inside container
-- If container crashes, logs are lost
-- Hard to view logs
-
-With stdout:
-- Docker captures it
-- CloudWatch stores it
-- Easy to view logs even after crashes
-
-
-3.5 CREATE .GITIGNORE
-----------------------
-
-File Location:
---------------
-proj2-ecs-fargate/.gitignore
-
-Content:
---------
 # Terraform
 .terraform/
 *.tfstate
@@ -714,996 +137,99 @@ Content:
 # Python
 __pycache__/
 *.pyc
-*.pyo
 .env
 venv/
 
 # OS
 .DS_Store
-Thumbs.db
 
 # IDE
 .idea/
 .vscode/
-*.swp
 
 # Logs
 *.log
-
-What .gitignore Is:
--------------------
-Tells Git which files to ignore (not track in version control).
-
-Why we need it:
-Some files shouldn't be in Git:
-- Temporary files (caches)
-- Secrets (passwords, API keys)
-- Build artifacts
-- OS-specific files
-
-Category Breakdown:
--------------------
-
-Terraform Section:
-- .terraform/: Downloaded provider plugins (large, regenerated)
-- *.tfstate: State files (can contain secrets)
-- *.tfvars: Variable files (often contain secrets)
-
-Python Section:
-- __pycache__/: Compiled Python files (regenerated)
-- *.pyc: Compiled bytecode
-- .env: Environment variables (often secrets)
-- venv/: Virtual environment (large, regenerated)
-
-OS Section:
-- .DS_Store: Mac file metadata (junk)
-- Thumbs.db: Windows thumbnail cache (junk)
-
-IDE Section:
-- .idea/: IntelliJ/PyCharm settings
-- .vscode/: VS Code settings
-- *.swp: Vim temporary files
-
-Logs Section:
-- *.log: Log files (can be large, regenerated)
-
-Best Practice:
-Always create .gitignore before first commit!
-
-
-3.6 BUILD DOCKER IMAGE
------------------------
-
-Command:
---------
-docker build -t proj2-app:local ./app
-
-What This Command Does:
-------------------------
-Builds a Docker image from your Dockerfile.
-
-Parameter Breakdown:
---------------------
-- docker build: Build an image
-- -t proj2-app:local: Tag it with name "proj2-app:local"
-- ./app: Use Dockerfile in ./app directory
-
-What is a Tag?
---------------
-A human-readable name for an image.
-
-Format: name:version
-- name: proj2-app
-- version: local
-
-Examples:
-- proj2-app:local (our dev version)
-- proj2-app:v1 (version 1)
-- proj2-app:production (production version)
-
-The Build Process:
-------------------
-
-Step 1: Docker reads Dockerfile
-Step 2: Executes each instruction
-Step 3: Each instruction creates a new layer
-Step 4: Final result is an image
-
-Output (what you see):
-```
-#1 [internal] load build definition from Dockerfile
-#2 [internal] load metadata for docker.io/library/python:3.11-slim
-#3 [1/6] FROM docker.io/library/python:3.11-slim
-#4 [2/6] WORKDIR /app
-#5 [3/6] COPY requirements.txt .
-#6 [4/6] RUN pip install --no-cache-dir -r requirements.txt
-#7 [5/6] COPY app.py .
-#8 [6/6] RUN useradd --create-home --shell /bin/bash appuser
-#9 exporting to image
-```
-
-Understanding the Output:
---------------------------
-
-"#3 [1/6] FROM python:3.11-slim"
-- [1/6]: Step 1 of 6
-- FROM python:3.11-slim: The instruction being executed
-
-If base image not cached:
-Docker downloads it:
-- Shows progress: "10.49MB / 30.13MB"
-- Extracts layers
-- Takes 30-60 seconds first time
-
-If cached:
-- Nearly instant
-- Shows "CACHED"
-
-"#6 [4/6] RUN pip install..."
-- Installs Flask and gunicorn
-- Shows download progress
-- Takes 10-30 seconds
-
-Final output:
-```
-exporting to image
-exporting layers 1.0s done
-exporting manifest done
-naming to docker.io/library/proj2-app:local done
-```
-
-Success! Image is built.
-
-Verify:
--------
-docker images | grep proj2-app
-
-Output:
-proj2-app:local    b980bc5cb0b6   238MB   51.8MB
-
-Fields:
-- Name: proj2-app:local
-- Image ID: b980bc5cb0b6 (unique identifier)
-- Virtual Size: 238MB (uncompressed)
-- Size on disk: 51.8MB (compressed)
-
-
-3.7 TEST DOCKER CONTAINER
---------------------------
-
-Commands:
----------
-# Start container
-docker run -d -p 8080:8080 --name proj2-test proj2-app:local
-
-# Test endpoints
-curl http://localhost:8080/
-curl http://localhost:8080/health
-
-# Check logs
-docker logs proj2-test
-
-# Stop and remove
-docker stop proj2-test
-docker rm proj2-test
-
-
-Command 1: Run Container
--------------------------
-docker run -d -p 8080:8080 --name proj2-test proj2-app:local
-
-Parameter breakdown:
-- docker run: Start a new container
-- -d: Detached mode (run in background)
-- -p 8080:8080: Port mapping (explained below)
-- --name proj2-test: Name the container "proj2-test"
-- proj2-app:local: Image to use
-
-What is -d (detached)?
-Without -d: Container runs in foreground (blocks terminal)
-With -d: Container runs in background (returns control)
-
-What is -p 8080:8080 (port mapping)?
-Format: -p HOST_PORT:CONTAINER_PORT
-
-Diagram:
-```
-Your Mac                      Docker Container
-┌──────────────┐             ┌──────────────┐
-│              │             │              │
-│ Port 8080 ◄──┼─────────────┼──► Port 8080│
-│              │             │              │
-│ curl         │             │ Flask app    │
-│ localhost:   │             │ running      │
-│ 8080         │             │              │
-└──────────────┘             └──────────────┘
-```
-
-Without -p:
-- App runs in container on port 8080
-- But you can't access it from Mac
-- Isolated network
-
-With -p 8080:8080:
-- Docker forwards Mac's port 8080 to container's port 8080
-- curl localhost:8080 → reaches app
-
-Different ports example:
--p 9000:8080
-- Access app on Mac via port 9000
-- App runs on port 8080 in container
-- curl localhost:9000 → reaches app
-
-Output:
-```
-c10dea4e1e17bca2accb6659fdb43b8d3bfe467ecfcc15f10bc38cf0bc93e6d8
-```
-
-This is the container ID (unique identifier).
-
-
-Command 2: Test Homepage
--------------------------
-curl http://localhost:8080/
-
-What curl does:
-Makes an HTTP GET request to the URL.
-
-Output:
-```json
-{
-    "message": "Hello from ECS Fargate!",
-    "service": "proj2-app"
-}
-```
-
-Success! The app is responding.
-
-
-Command 3: Test Health Endpoint
---------------------------------
-curl http://localhost:8080/health
-
-Output:
-```json
-{
-    "status": "ok",
-    "timestamp": "2026-01-16T21:20:18.962999"
-}
-```
-
-Success! Health check works.
-
-
-Command 4: Check Logs
-----------------------
-docker logs proj2-test
-
-Output:
-```
-[2026-01-16 21:20:04 +0000] [1] [INFO] Starting gunicorn 21.2.0
-[2026-01-16 21:20:04 +0000] [1] [INFO] Listening at: http://0.0.0.0:8080 (1)
-[2026-01-16 21:20:04 +0000] [1] [INFO] Using worker: sync
-[2026-01-16 21:20:04 +0000] [7] [INFO] Booting worker with pid: 7
-[2026-01-16 21:20:04 +0000] [8] [INFO] Booting worker with pid: 8
-192.168.65.1 - - [16/Jan/2026:21:20:18 +0000] "GET / HTTP/1.1" 200 60 "-" "curl/8.7.1"
-2026-01-16 21:20:18 - INFO - GET / - 200 - 0.6ms
-192.168.65.1 - - [16/Jan/2026:21:20:18 +0000] "GET /health HTTP/1.1" 200 57 "-" "curl/8.7.1"
-2026-01-16 21:20:18 - INFO - GET /health - 200 - 0.1ms
-```
-
-Log breakdown:
-
-Gunicorn startup logs:
-- Starting gunicorn 21.2.0
-- Listening at: http://0.0.0.0:8080
-- Booting worker with pid: 7 (first worker)
-- Booting worker with pid: 8 (second worker)
-
-Access logs (from gunicorn):
-192.168.65.1 - - [16/Jan/2026:21:20:18 +0000] "GET / HTTP/1.1" 200 60
-│            │   │                           │       │        │   │
-│            │   │                           │       │        │   └─ Response size
-│            │   │                           │       │        └───── Status code
-│            │   │                           │       └────────────── HTTP version
-│            │   │                           └────────────────────── Request
-│            │   └────────────────────────────────────────────────── Timestamp
-│            └────────────────────────────────────────────────────── Auth info
-└─────────────────────────────────────────────────────────────────── Client IP
-
-Application logs (from our app.py):
-2026-01-16 21:20:18 - INFO - GET / - 200 - 0.6ms
-│                     │      │    │    │     │
-│                     │      │    │    │     └─ Latency (0.6 milliseconds)
-│                     │      │    │    └─────── Status code
-│                     │      │    └──────────── Path
-│                     │      └───────────────── HTTP method
-│                     └──────────────────────── Log level
-└────────────────────────────────────────────── Timestamp
-
-This is the observability logging we implemented!
-You can see:
-✓ What was requested (GET /)
-✓ Was it successful? (200)
-✓ How fast? (0.6ms - very fast!)
-
-
-Command 5: Stop Container
---------------------------
-docker stop proj2-test
-
-What it does:
-Gracefully stops the container:
-1. Sends SIGTERM signal to main process
-2. Waits 10 seconds for graceful shutdown
-3. If still running, sends SIGKILL (force quit)
-
-Output:
-proj2-test
-
-Command 6: Remove Container
-----------------------------
-docker rm proj2-test
-
-What it does:
-Deletes the stopped container.
-
-Output:
-proj2-test
-
-Note: This removes the container, NOT the image!
-- Image: proj2-app:local still exists
-- Container: proj2-test is deleted
-
-Think of it like:
-- Image = Template/Blueprint
-- Container = Instance created from blueprint
-
-You can create infinite containers from one image.
-
-
-3.8 GIT COMMIT
---------------
-
-Commands:
----------
-git init
-git add .
-git commit -m "feat: add Flask app with health endpoint and observability logging"
-
-What git init does:
--------------------
-Initializes a new Git repository in the current directory.
-
-Creates:
-- .git/ directory (hidden)
-- Tracks all changes to files
-
-What git add . does:
---------------------
-Stages all files for commit.
-
-Stages:
-- .gitignore
-- app/Dockerfile
-- app/app.py
-- app/requirements.txt
-
-"Staging" means: "Include these files in the next commit"
-
-What git commit does:
----------------------
-Creates a snapshot of your code.
-
-Commit message format:
-feat: <description>
-
-Types:
-- feat: New feature
-- fix: Bug fix
-- docs: Documentation
-- refactor: Code reorganization
-- test: Adding tests
-
-Why commit?
-- History: See what changed and when
-- Revert: Go back if something breaks
-- Collaboration: Share code with team
-- Backup: Code is saved
-
-Output:
-[main (root-commit) f3a480d] feat: add Flask app with health endpoint and observability logging
- 4 files changed, 100 insertions(+)
- create mode 100644 .gitignore
- create mode 100644 app/Dockerfile
- create mode 100644 app/app.py
- create mode 100644 app/requirements.txt
-
-Fields:
-- main: Branch name
-- f3a480d: Commit hash (unique ID)
-- 4 files changed: 4 new files
-- 100 insertions: 100 lines added
-
+tfplan
 
 ================================================================================
-4. TECHNICAL DEEP DIVES
+DOCKER COMMANDS
 ================================================================================
 
-4.1 HOW FLASK WORKS
---------------------
+BUILD IMAGE:
+  docker build -t proj2-app:local ./app
 
-Flask Architecture:
--------------------
+  -t proj2-app:local   Tag the image with name:version
+  ./app                Build from ./app directory (where Dockerfile is)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Flask Application                     │
-│                                                         │
-│  ┌────────────────────────────────────────────────┐   │
-│  │ Request Lifecycle                              │   │
-│  │                                                │   │
-│  │ 1. Client sends HTTP request                   │   │
-│  │    GET / HTTP/1.1                             │   │
-│  │                                                │   │
-│  │ 2. Flask receives request                      │   │
-│  │    - Parses HTTP headers                       │   │
-│  │    - Creates Request object                    │   │
-│  │                                                │   │
-│  │ 3. Flask runs @app.before_request              │   │
-│  │    - start_timer() executes                    │   │
-│  │    - g.start_time = current time               │   │
-│  │                                                │   │
-│  │ 4. Flask routes URL to function                │   │
-│  │    - Matches "/" to hello()                    │   │
-│  │    - Calls hello()                             │   │
-│  │                                                │   │
-│  │ 5. Function returns response                   │   │
-│  │    - hello() returns JSON dict                 │   │
-│  │    - Flask converts to HTTP response           │   │
-│  │                                                │   │
-│  │ 6. Flask runs @app.after_request               │   │
-│  │    - log_request() executes                    │   │
-│  │    - Logs method, path, status, latency        │   │
-│  │                                                │   │
-│  │ 7. Flask sends HTTP response                   │   │
-│  │    HTTP/1.1 200 OK                            │   │
-│  │    Content-Type: application/json              │   │
-│  │    {"message": "Hello from ECS Fargate!"}     │   │
-│  └────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-```
+RUN CONTAINER:
+  docker run -d -p 8080:8080 --name proj2-test proj2-app:local
 
-Flask Request Object:
----------------------
-Accessible via "from flask import request"
+  -d                   Run in background (detached)
+  -p 8080:8080         Map host port 8080 to container port 8080
+  --name proj2-test    Name the container
 
-Attributes:
-- request.method: "GET", "POST", "PUT", "DELETE"
-- request.path: "/" or "/health"
-- request.headers: Dict of HTTP headers
-- request.args: Query parameters (?foo=bar)
-- request.json: JSON body (for POST requests)
+TEST ENDPOINTS:
+  curl http://localhost:8080/
+  # {"message":"Hello from ECS Fargate!","service":"proj2-app"}
 
-Flask Response:
----------------
-What you return from a function becomes the HTTP response.
+  curl http://localhost:8080/health
+  # {"status":"ok","timestamp":"2026-01-16T21:20:18.962999"}
 
-Return types:
-1. String: Returns HTML
-   return "<h1>Hello</h1>"
+VIEW LOGS:
+  docker logs proj2-test
 
-2. Dict: Converted to JSON (via jsonify)
-   return {"message": "Hello"}
+  # Shows gunicorn startup + request logs:
+  # GET / - 200 - 0.6ms
+  # GET /health - 200 - 0.1ms
 
-3. Response object: Full control
-   return Response("Hello", status=201, headers={"X-Custom": "value"})
+CLEANUP:
+  docker stop proj2-test
+  docker rm proj2-test
 
-Flask 'g' Object:
------------------
-Global object that lasts for one request.
-
-Lifecycle:
-- Created at start of request
-- Persists through before_request, route, after_request
-- Destroyed at end of request
-- Not shared between requests
-
-Use case:
-Store temporary data needed by multiple functions during one request.
-
-
-4.2 HOW DOCKER WORKS
----------------------
-
-Docker Architecture:
---------------------
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Your Mac                            │
-│                                                         │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │ Docker Desktop                                   │  │
-│  │                                                  │  │
-│  │  ┌────────────────────────────────────────────┐ │  │
-│  │  │ Docker Engine (daemon)                     │ │  │
-│  │  │                                            │ │  │
-│  │  │  ┌──────────────────────────────────────┐ │ │  │
-│  │  │  │ Container 1                          │ │ │  │
-│  │  │  │ ┌──────────────────────────────────┐ │ │ │  │
-│  │  │  │ │ Flask App                        │ │ │ │  │
-│  │  │  │ │ Python                           │ │ │ │  │
-│  │  │  │ │ OS Libraries                     │ │ │ │  │
-│  │  │  │ └──────────────────────────────────┘ │ │ │  │
-│  │  │  └──────────────────────────────────────┘ │ │  │
-│  │  │                                            │ │  │
-│  │  │  ┌──────────────────────────────────────┐ │ │  │
-│  │  │  │ Container 2 (if you had another)     │ │ │  │
-│  │  │  └──────────────────────────────────────┘ │ │  │
-│  │  └────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                         │
-│  Host OS (macOS)                                       │
-└─────────────────────────────────────────────────────────┘
-```
-
-Docker Layers (How Images Work):
----------------------------------
-
-An image is built in layers (like a stack of transparencies).
-
-Example for our proj2-app image:
-
-```
-Layer 10: useradd appuser          (5 KB)
-Layer 9:  COPY app.py              (2 KB)
-Layer 8:  pip install flask/gunicorn (30 MB)
-Layer 7:  COPY requirements.txt    (100 bytes)
-Layer 6:  WORKDIR /app             (1 KB)
-Layer 5:  python libraries         (50 MB)
-Layer 4:  pip                      (20 MB)
-Layer 3:  python                   (80 MB)
-Layer 2:  system libraries         (40 MB)
-Layer 1:  debian base              (30 MB)
-─────────────────────────────────────────
-Total:    ~238 MB
-```
-
-Each layer is:
-- Immutable (read-only)
-- Cached independently
-- Shared between images
-
-Example of sharing:
-```
-proj2-app image:
-├─ Layers 1-6 (python:3.11-slim)
-├─ Layer 7 (requirements.txt)
-├─ Layer 8 (pip install)
-├─ Layer 9 (app.py)
-└─ Layer 10 (user)
-
-another-app image:
-├─ Layers 1-6 (python:3.11-slim) ← SHARED!
-├─ Layer 7 (different requirements)
-└─ Layer 8 (different app)
-```
-
-Both images share layers 1-6!
-Disk usage: Not 238 MB + 238 MB = 476 MB
-Actual: 238 MB + 10 MB = 248 MB
-
-Docker Container vs Image:
----------------------------
-
-Image:
-- Read-only template
-- Stored on disk
-- Like a class in programming
-
-Container:
-- Running instance of an image
-- Has read-write layer on top
-- Like an object instance in programming
-
-Analogy:
-Image = Cookie cutter
-Container = Actual cookies made from that cutter
-
-You can have many containers from one image:
-```
-Image: proj2-app:local
-├─ Container: proj2-test
-├─ Container: proj2-prod
-└─ Container: proj2-staging
-```
-
-Docker Networking:
-------------------
-
-Without -p flag:
-```
-Your Mac                      Docker Container
-┌──────────────┐             ┌──────────────┐
-│              │             │              │
-│              │    ✗        │ Port 8080    │
-│              │   Blocked   │ (isolated)   │
-│              │             │              │
-└──────────────┘             └──────────────┘
-```
-
-With -p 8080:8080:
-```
-Your Mac                      Docker Container
-┌──────────────┐             ┌──────────────┐
-│              │             │              │
-│ Port 8080 ◄──┼─────────────┼──► Port 8080│
-│   (host)     │   Bridge    │  (container) │
-│              │   Network   │              │
-└──────────────┘             └──────────────┘
-```
-
-Docker creates a bridge network that forwards:
-localhost:8080 (Mac) → container:8080
-
-
-4.3 HOW GUNICORN WORKS
------------------------
-
-Gunicorn Architecture:
-----------------------
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                   Gunicorn Server                        │
-│                                                         │
-│  ┌────────────────────────────────────────────────┐   │
-│  │ Master Process (PID 1)                         │   │
-│  │ - Manages workers                              │   │
-│  │ - Handles signals (restart, shutdown)          │   │
-│  │ - Monitors worker health                       │   │
-│  └────────────┬───────────────────────────────────┘   │
-│               │                                         │
-│               ├─────────────────┬───────────────────────┤
-│               ▼                 ▼                       │
-│  ┌─────────────────────┐  ┌─────────────────────┐     │
-│  │ Worker 1 (PID 7)    │  │ Worker 2 (PID 8)    │     │
-│  │                     │  │                     │     │
-│  │ Handles Request A   │  │ Handles Request B   │     │
-│  │ Flask App Instance  │  │ Flask App Instance  │     │
-│  └─────────────────────┘  └─────────────────────┘     │
-└─────────────────────────────────────────────────────────┘
-```
-
-Master Process:
-- PID 1 (first process in container)
-- Listens on port 8080
-- Receives incoming requests
-- Distributes to workers
-- If worker crashes, restarts it
-
-Worker Processes:
-- Each is a separate OS process
-- Each has its own Flask app instance
-- Run independently (parallel)
-- Handle requests simultaneously
-
-Request Flow:
--------------
-
-```
-Step 1: Request arrives
-Client → Port 8080 → Gunicorn Master
-
-Step 2: Master distributes to worker
-Master → Worker 1 (if available)
-
-Step 3: Worker processes
-Worker 1 → Flask app → hello() → Response
-
-Step 4: Response returned
-Worker 1 → Master → Client
-```
-
-Worker Management:
-------------------
-
-Scenario: Worker 1 crashes
-1. Master detects worker 1 is dead
-2. Master starts new worker
-3. Service continues with worker 2 handling requests
-4. New worker comes online
-
-Without gunicorn:
-Flask dev server crashes → Entire app down
-
-With gunicorn:
-One worker crashes → Other workers continue → Crashed worker restarted
-
-Worker Types:
--------------
-
-Sync (default):
-- One request per worker at a time
-- Simple, reliable
-- Good for most apps
-
-Async (gevent, eventlet):
-- Handle multiple requests per worker
-- Complex, harder to debug
-- Good for I/O-heavy apps
-
-We use sync (default) because our app is simple.
-
-Configuration:
---------------
-
-Our command:
-gunicorn --bind 0.0.0.0:8080 --workers 2 --access-logfile - --error-logfile - app:app
-
-Options explained:
-
---bind 0.0.0.0:8080
-- Listen on all network interfaces
-- Port 8080
-
---workers 2
-- Start 2 worker processes
-- Formula: (2 x CPU cores) + 1
-- Our Fargate task: 256 CPU = 0.25 cores
-- 2 workers is reasonable
-
---access-logfile -
-- Log requests to stdout
-- "-" means stdout (not a file)
-
---error-logfile -
-- Log errors to stdout
-
-app:app
-- Module: app.py
-- Application: app object
-- Format: module:application
-
+OTHER USEFUL COMMANDS:
+  docker ps                    # List running containers
+  docker images | grep proj2   # List images
+  docker logs -f proj2-test    # Follow logs in real-time
 
 ================================================================================
-5. TROUBLESHOOTING COMMON ISSUES
+GIT COMMANDS
 ================================================================================
 
-Issue 1: Port Already in Use
------------------------------
-
-Error:
-docker: Error response from daemon: driver failed programming external
-connectivity on endpoint proj2-test: Bind for 0.0.0.0:8080 failed:
-port is already allocated.
-
-Cause:
-Another process is using port 8080.
-
-Solutions:
-
-Option A: Find and stop the process
-lsof -i :8080
-kill <PID>
-
-Option B: Use a different port
-docker run -d -p 9000:8080 ...
-curl http://localhost:9000/
-
-Option C: Stop conflicting container
-docker ps
-docker stop <container-name>
-
-
-Issue 2: Image Build Fails - Network Error
--------------------------------------------
-
-Error:
-ERROR: failed to solve: python:3.11-slim: failed to resolve source metadata
-
-Cause:
-Can't download base image (network issue).
-
-Solutions:
-
-1. Check internet connection
-2. Check Docker Desktop is running
-3. Try again (temporary Docker Hub issue)
-4. Use cached image if available
-
-
-Issue 3: Container Exits Immediately
--------------------------------------
-
-Error:
-Container starts but immediately stops.
-
-Debug:
-docker logs proj2-test
-
-Common causes:
-
-Cause A: Syntax error in app.py
-Error message shows Python traceback.
-Fix: Check app.py for syntax errors.
-
-Cause B: Missing dependency
-Error: ModuleNotFoundError: No module named 'flask'
-Fix: Check requirements.txt, rebuild image.
-
-Cause C: Port conflict inside container
-Error: Address already in use
-Fix: Check EXPOSE and CMD use same port.
-
-
-Issue 4: Can't Access App from Browser
----------------------------------------
-
-Symptom:
-Container running, but curl/browser can't connect.
-
-Checklist:
-
-1. Is container running?
-   docker ps | grep proj2-test
-
-2. Is port mapped correctly?
-   docker ps shows: 0.0.0.0:8080->8080/tcp
-
-3. Is app listening on correct port?
-   docker logs proj2-test
-   Should see: "Listening at: http://0.0.0.0:8080"
-
-4. Is firewall blocking?
-   Try: curl http://localhost:8080/
-
-5. Using correct URL?
-   ✓ http://localhost:8080/
-   ✗ https://localhost:8080/ (no HTTPS)
-   ✗ http://127.0.0.1:8080 (should work, but try localhost)
-
-
-Issue 5: Slow Build Times
---------------------------
-
-Symptom:
-docker build takes 5+ minutes.
-
-Causes & Solutions:
-
-Cause A: Downloading base image
-First build downloads python:3.11-slim (180 MB).
-Solution: Normal. Subsequent builds are cached.
-
-Cause B: Poor layer caching
-COPY app.py before requirements.txt.
-Solution: Reorganize Dockerfile (requirements first).
-
-Cause C: No cache used
-docker build --no-cache ...
-Solution: Remove --no-cache flag.
-
-
-Issue 6: Image Size Too Large
-------------------------------
-
-Symptom:
-Image is 1+ GB.
-
-Causes & Solutions:
-
-Cause A: Using full Python image
-FROM python:3.11 (1 GB)
-Solution: Use python:3.11-slim (180 MB)
-
-Cause B: Not using .dockerignore
-Copying __pycache__, .git, etc.
-Solution: Create .dockerignore file.
-
-Cause C: Installing dev dependencies
-pip install -r requirements-dev.txt
-Solution: Only install production dependencies.
-
+  git init
+  git add .
+  git commit -m "feat: add Flask app with Docker"
 
 ================================================================================
-6. SUMMARY AND NEXT STEPS
+KEY CONCEPTS
 ================================================================================
 
-What We Accomplished in Phase A:
----------------------------------
+Docker Image vs Container:
+- Image = Read-only template (like a class)
+- Container = Running instance of an image (like an object)
+- One image can create many containers
 
-✅ Created Flask web application
-   - Homepage endpoint (/)
-   - Health check endpoint (/health)
-   - Request logging with latency tracking
+Docker Layers:
+- Each Dockerfile instruction creates a layer
+- Layers are cached - unchanged layers don't rebuild
+- Copy requirements.txt before app.py = faster rebuilds when only code changes
 
-✅ Containerized the application
-   - Created Dockerfile
-   - Built Docker image (proj2-app:local)
-   - Tested locally
+Port Mapping (-p 8080:8080):
+- Format: HOST_PORT:CONTAINER_PORT
+- Without -p: Container is isolated, can't access from host
+- With -p: Docker forwards host port to container port
 
-✅ Implemented best practices
-   - Non-root user in container
-   - Production-ready web server (gunicorn)
-   - Proper logging to stdout
-   - Layer caching optimization
-
-✅ Version control
-   - Initialized Git repository
-   - Created .gitignore
-   - Made initial commit
-
-Files Created:
---------------
-proj2-ecs-fargate/
-├── .git/
-├── .gitignore
-└── app/
-    ├── app.py              (Flask application)
-    ├── requirements.txt    (Python dependencies)
-    └── Dockerfile          (Container build instructions)
-
-Docker Artifacts:
------------------
-- Image: proj2-app:local (238 MB)
-- Tag: v1 (will create in Phase C)
-
-Skills Learned:
----------------
-1. Flask web framework basics
-2. Docker image building
-3. Dockerfile syntax and best practices
-4. Container networking and port mapping
-5. Docker layer caching
-6. Gunicorn configuration
-7. Application logging for observability
-8. Git version control
-
-Key Concepts:
--------------
-- Web framework (Flask)
-- WSGI server (Gunicorn)
-- Containerization (Docker)
-- Image layers
-- Container vs Image
-- Port mapping
-- Request/Response cycle
-- Observability logging
-
-Next Steps (Phase B):
----------------------
-1. Verify AWS CLI configuration
-2. Create AWS Budget alert ($10/month)
-3. Test AWS service access (ECR, ECS, VPC)
-4. Prepare for pushing image to AWS
-
-Next Steps (Phase C):
----------------------
-1. Create ECR repository
-2. Authenticate Docker to ECR
-3. Tag image with ECR URI
-4. Push image to AWS
-5. Verify image in ECR
-
-Questions to Understand:
-------------------------
-1. What is the difference between a Docker image and container?
-   → Image is a template, container is a running instance
-
-2. Why do we use gunicorn instead of Flask's dev server?
-   → Gunicorn is production-ready, handles multiple requests, auto-restarts workers
-
-3. What does the health endpoint do?
-   → Allows AWS ALB to check if container is healthy
-
-4. Why copy requirements.txt before app.py in Dockerfile?
-   → Layer caching - dependencies change less often than code
-
-5. What does -p 8080:8080 mean?
-   → Maps host port 8080 to container port 8080
+Why non-root user?
+- Default is root (full access)
+- If hacker exploits app, they get limited access with non-root
+- Security best practice
 
 ================================================================================
-END OF PHASE A EXPLANATION
+WHAT'S NEXT
+================================================================================
+
+Phase B: AWS setup and configuration
+Phase C: Create ECR repository and push Docker image to AWS
+Phase D: Terraform infrastructure setup
+Phase E: Deploy to ECS Fargate
+
 ================================================================================

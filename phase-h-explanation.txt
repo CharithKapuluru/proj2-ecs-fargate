@@ -1,0 +1,1324 @@
+================================================================================
+PHASE H: AUTO-SCALING WITH FARGATE SPOT - DETAILED EXPLANATION
+================================================================================
+
+This document provides a comprehensive, beginner-friendly explanation of Phase H,
+where we implemented auto-scaling for our ECS Fargate service using Fargate Spot
+for cost savings and scheduled scaling to reduce costs during off-hours.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+1. Introduction to Auto-Scaling
+2. Fargate Spot Explained
+3. What We Built in Phase H
+4. Application Auto Scaling Deep Dive
+5. Scaling Policies Explained
+6. Scheduled Scaling
+7. Capacity Provider Strategy
+8. File-by-File Breakdown
+9. How Scaling Works in Practice
+10. Cost Analysis
+11. Testing Your Auto-Scaling
+12. Key Concepts Summary
+13. Common Issues and Solutions
+
+================================================================================
+1. INTRODUCTION TO AUTO-SCALING
+================================================================================
+
+What is Auto-Scaling?
+---------------------
+Auto-scaling automatically adjusts the number of running instances (tasks)
+based on demand. When traffic increases, more tasks start. When traffic
+decreases, tasks are terminated.
+
+Why Auto-Scaling Matters
+------------------------
+Without auto-scaling:
+- Fixed capacity regardless of load
+- Over-provisioned = wasting money
+- Under-provisioned = poor performance
+- Manual intervention needed for traffic spikes
+
+With auto-scaling:
+- Capacity matches demand
+- Pay only for what you use
+- Handle traffic spikes automatically
+- No manual intervention needed
+
+Auto-Scaling Types
+------------------
+
+1. **Target Tracking Scaling**
+   - Maintains a target metric value
+   - Example: "Keep CPU at 70%"
+   - AWS automatically adjusts capacity
+   - Simplest to configure
+
+2. **Step Scaling**
+   - Define specific scaling steps
+   - Example: "If CPU > 80%, add 2 tasks"
+   - More granular control
+   - Good for predictable patterns
+
+3. **Scheduled Scaling**
+   - Scale at specific times
+   - Example: "Scale to 0 at 10 PM"
+   - Good for known traffic patterns
+   - Cost optimization
+
+We use **Target Tracking + Scheduled Scaling** for the best balance.
+
+ECS Auto-Scaling Architecture
+-----------------------------
+```
+                    ┌─────────────────────────────────┐
+                    │    Application Auto Scaling     │
+                    │                                 │
+                    │  ┌──────────────────────────┐  │
+                    │  │   Scaling Policies       │  │
+                    │  │   - CPU Target: 70%      │  │
+                    │  │   - Request Target: 100  │  │
+                    │  └──────────────────────────┘  │
+                    │                                 │
+                    │  ┌──────────────────────────┐  │
+                    │  │   Scheduled Actions      │  │
+                    │  │   - Night: min=0, max=0  │  │
+                    │  │   - Morning: min=1,max=4 │  │
+                    │  └──────────────────────────┘  │
+                    └─────────────┬───────────────────┘
+                                  │
+                                  │ Adjusts desired_count
+                                  ▼
+                    ┌─────────────────────────────────┐
+                    │         ECS Service             │
+                    │      (proj2-service)            │
+                    │                                 │
+                    │   desired_count: 1-4            │
+                    │   capacity_provider: SPOT       │
+                    └─────────────────────────────────┘
+                                  │
+                                  │ Starts/stops tasks
+                                  ▼
+                    ┌─────────────────────────────────┐
+                    │        Fargate Tasks            │
+                    │                                 │
+                    │   Task 1 (SPOT) ── Running      │
+                    │   Task 2 (SPOT) ── If needed    │
+                    │   Task 3 (SPOT) ── If needed    │
+                    │   Task 4 (SPOT) ── If needed    │
+                    └─────────────────────────────────┘
+```
+
+================================================================================
+2. FARGATE SPOT EXPLAINED
+================================================================================
+
+What is Fargate Spot?
+---------------------
+Fargate Spot uses spare AWS compute capacity at up to 70% discount compared
+to regular Fargate pricing. The tradeoff: AWS can interrupt your tasks with
+2 minutes notice when capacity is needed elsewhere.
+
+Regular Fargate vs Fargate Spot
+-------------------------------
+| Aspect | Regular Fargate | Fargate Spot |
+|--------|-----------------|--------------|
+| Price | $0.04048/vCPU/hr | ~$0.012/vCPU/hr |
+| Availability | Guaranteed | Best-effort |
+| Interruption | Never | Possible (rare) |
+| Use case | Critical workloads | Cost-sensitive |
+| SLA | 99.99% | No SLA |
+
+Pricing Comparison (256 CPU, 512 MB)
+------------------------------------
+Regular Fargate:
+- CPU: 0.25 vCPU × $0.04048 = $0.01012/hr
+- Memory: 0.5 GB × $0.004445 = $0.00222/hr
+- Total: $0.01234/hr = **$8.89/month**
+
+Fargate Spot (~70% discount):
+- Total: ~$0.0037/hr = **$2.67/month**
+
+Savings: **~$6.22/month per task**
+
+When to Use Fargate Spot
+------------------------
+Good for:
+- Development/staging environments
+- Fault-tolerant applications
+- Batch processing
+- Applications with multiple replicas
+- Portfolio projects (like ours!)
+
+Not recommended for:
+- Single-instance critical applications
+- Stateful applications without persistence
+- Real-time systems requiring 100% uptime
+
+How Spot Interruption Works
+---------------------------
+1. AWS needs the capacity back
+2. ECS receives 2-minute warning
+3. SIGTERM sent to container
+4. Task enters DRAINING state
+5. ALB stops sending new requests
+6. Task has 2 minutes to finish
+7. Task is terminated
+8. ECS starts replacement (if capacity available)
+
+For our setup, interruptions are rare (<5% of tasks) and we have
+a fallback to regular Fargate for reliability.
+
+================================================================================
+3. WHAT WE BUILT IN PHASE H
+================================================================================
+
+Resources Created
+-----------------
+
+1. **ECS Cluster Capacity Providers**
+   - Configures FARGATE and FARGATE_SPOT
+   - Sets default strategy to prefer Spot
+
+2. **Application Auto Scaling Target**
+   - Links auto-scaling to ECS service
+   - Defines min/max capacity (1-4 tasks)
+
+3. **CPU Scaling Policy**
+   - Target: 70% CPU utilization
+   - Scales out when CPU is high
+   - Scales in when CPU is low
+
+4. **Request Count Scaling Policy**
+   - Target: 100 requests per target per minute
+   - Scales based on traffic volume
+
+5. **Scheduled Action: Scale Down (Night)**
+   - Runs at 10 PM UTC daily
+   - Sets min=0, max=0
+   - Service scales to zero tasks
+
+6. **Scheduled Action: Scale Up (Morning)**
+   - Runs at 8 AM UTC daily
+   - Sets min=1, max=4
+   - Service resumes normal operation
+
+7. **CloudWatch Alarm (Informational)**
+   - Tracks when service has zero tasks
+   - No notifications (expected behavior)
+
+Resources Modified
+------------------
+
+1. **ECS Service**
+   - Changed from `launch_type` to `capacity_provider_strategy`
+   - Added lifecycle rule to ignore desired_count changes
+   - Configured Spot + Fargate fallback
+
+Total New Resources: 8
+
+Architecture After Phase H
+--------------------------
+```
+                         ┌────────────────────────────────┐
+                         │     Application Auto Scaling    │
+                         │                                 │
+                         │ Policies:                       │
+                         │  - CPU Target: 70%              │
+                         │  - Requests: 100/target/min     │
+                         │                                 │
+                         │ Schedule:                       │
+                         │  - 10 PM: Scale to 0            │
+                         │  - 8 AM: Scale to 1-4           │
+                         └────────────────┬───────────────┘
+                                          │
+┌──────────────────────────────────────────┼──────────────────────────────────┐
+│                                   ECS    │                                   │
+│                                          ▼                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        ECS Service                                   │   │
+│  │                      (proj2-service)                                 │   │
+│  │                                                                      │   │
+│  │  Capacity Strategy:                                                  │   │
+│  │   - FARGATE_SPOT (weight: 4) ──→ 80% of tasks                       │   │
+│  │   - FARGATE (weight: 1, base: 1) ──→ 20% + guaranteed 1 task        │   │
+│  │                                                                      │   │
+│  │  Tasks: 0-4 depending on time and load                              │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐                  │
+│  │  Task 1       │  │  Task 2       │  │  Task 3...    │                  │
+│  │  (FARGATE)    │  │  (SPOT)       │  │  (SPOT)       │                  │
+│  │  Base task    │  │  If needed    │  │  If needed    │                  │
+│  └───────────────┘  └───────────────┘  └───────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+================================================================================
+4. APPLICATION AUTO SCALING DEEP DIVE
+================================================================================
+
+What is Application Auto Scaling?
+---------------------------------
+Application Auto Scaling is an AWS service that automatically scales
+resources for various AWS services including:
+- ECS services
+- DynamoDB tables
+- Aurora replicas
+- Lambda provisioned concurrency
+- And more...
+
+It's separate from EC2 Auto Scaling (which scales EC2 instances).
+
+Scalable Target
+---------------
+A scalable target represents what you want to scale:
+
+```hcl
+resource "aws_appautoscaling_target" "ecs_target" {
+  max_capacity       = var.max_task_count    # 4
+  min_capacity       = var.min_task_count    # 1
+  resource_id        = "service/${cluster}/${service}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+```
+
+**max_capacity**: Maximum tasks (never exceed this)
+**min_capacity**: Minimum tasks (always have at least this)
+**resource_id**: What to scale (ECS service in our case)
+**scalable_dimension**: What property to adjust (DesiredCount)
+**service_namespace**: Which AWS service (ecs)
+
+Resource ID Format
+------------------
+For ECS: `service/{cluster-name}/{service-name}`
+Example: `service/proj2-cluster/proj2-service`
+
+Scalable Dimensions
+-------------------
+For ECS, the only dimension is:
+- `ecs:service:DesiredCount`: Number of tasks
+
+Other services have different dimensions:
+- DynamoDB: `dynamodb:table:ReadCapacityUnits`
+- Lambda: `lambda:function:ProvisionedConcurrency`
+
+How Scaling Decisions are Made
+------------------------------
+```
+1. CloudWatch collects metrics every minute
+         │
+         ▼
+2. Auto Scaling evaluates metrics against policies
+         │
+         ├── CPU > 70%? → Scale OUT
+         ├── CPU < 70%? → Scale IN (maybe)
+         ├── Requests > 100/target? → Scale OUT
+         └── Scheduled time? → Apply scheduled capacity
+         │
+         ▼
+3. Determine new desired_count
+         │
+         ▼
+4. Apply cooldown (prevent thrashing)
+         │
+         ▼
+5. Update ECS service desired_count
+         │
+         ▼
+6. ECS starts/stops tasks to match
+```
+
+================================================================================
+5. SCALING POLICIES EXPLAINED
+================================================================================
+
+Target Tracking Scaling
+-----------------------
+Target tracking is the simplest and most common scaling policy.
+You specify a target value, and AWS maintains it.
+
+CPU-Based Scaling Policy
+------------------------
+```hcl
+resource "aws_appautoscaling_policy" "ecs_cpu_policy" {
+  name               = "proj2-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.ecs_target.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs_target.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ecs_target.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+```
+
+**target_value = 70.0**: Keep average CPU at 70%
+
+How it works:
+- If average CPU > 70%: Add tasks until CPU drops to 70%
+- If average CPU < 70%: Remove tasks (but keep min)
+
+**scale_out_cooldown = 60**: Wait 60 seconds between scale-out events
+**scale_in_cooldown = 300**: Wait 300 seconds between scale-in events
+
+Why different cooldowns?
+- Scale OUT quickly (handle traffic spikes)
+- Scale IN slowly (avoid thrashing, ensure stability)
+
+Request Count Scaling Policy
+----------------------------
+```hcl
+resource "aws_appautoscaling_policy" "ecs_request_policy" {
+  name               = "proj2-request-scaling"
+  policy_type        = "TargetTrackingScaling"
+  ...
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${alb_arn_suffix}/${target_group_arn_suffix}"
+    }
+    target_value       = 100.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+```
+
+**target_value = 100**: Keep requests at 100 per target per minute
+
+**resource_label**: Links to specific ALB and target group
+
+How it works:
+- 200 requests/min with 1 task = 200 req/target → Scale to 2 tasks
+- 200 requests/min with 2 tasks = 100 req/target → Perfect
+- 50 requests/min with 2 tasks = 25 req/target → Scale to 1 task
+
+Predefined Metrics for ECS
+--------------------------
+| Metric | Description |
+|--------|-------------|
+| ECSServiceAverageCPUUtilization | Average CPU across all tasks |
+| ECSServiceAverageMemoryUtilization | Average memory across all tasks |
+| ALBRequestCountPerTarget | Requests per target from ALB |
+
+Multiple Policies
+-----------------
+When multiple policies exist, AWS uses the one that results in
+the highest capacity (for scale-out) or lowest capacity (for scale-in).
+
+Example:
+- CPU policy says: Need 2 tasks
+- Request policy says: Need 3 tasks
+- Result: 3 tasks (higher wins for scale-out)
+
+================================================================================
+6. SCHEDULED SCALING
+================================================================================
+
+What is Scheduled Scaling?
+--------------------------
+Scheduled scaling adjusts capacity at specific times. It's perfect for
+predictable traffic patterns or cost optimization.
+
+Our Schedule
+------------
+```
+UTC Time │ Action              │ Capacity
+─────────┼─────────────────────┼──────────
+8:00 AM  │ Scale Up (Morning)  │ min=1, max=4
+         │                     │
+         │ [Normal Operation]  │ 1-4 tasks based on load
+         │                     │
+10:00 PM │ Scale Down (Night)  │ min=0, max=0
+         │                     │
+         │ [Zero Tasks]        │ No cost, 503 response
+```
+
+Scale Down at Night
+-------------------
+```hcl
+resource "aws_appautoscaling_scheduled_action" "scale_down_night" {
+  name               = "proj2-scale-down-night"
+  service_namespace  = aws_appautoscaling_target.ecs_target.service_namespace
+  resource_id        = aws_appautoscaling_target.ecs_target.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs_target.scalable_dimension
+  schedule           = "cron(0 22 * * ? *)"
+
+  scalable_target_action {
+    min_capacity = 0
+    max_capacity = 0
+  }
+}
+```
+
+**schedule**: Cron expression for 10 PM UTC daily
+**min_capacity = 0, max_capacity = 0**: Forces service to 0 tasks
+
+Cron Expression: `cron(0 22 * * ? *)`
+- 0: Minute 0
+- 22: Hour 22 (10 PM)
+- *: Any day of month
+- *: Any month
+- ?: Any day of week
+- *: Any year
+
+Scale Up in Morning
+-------------------
+```hcl
+resource "aws_appautoscaling_scheduled_action" "scale_up_morning" {
+  name               = "proj2-scale-up-morning"
+  ...
+  schedule           = "cron(0 8 * * ? *)"
+
+  scalable_target_action {
+    min_capacity = var.min_task_count  # 1
+    max_capacity = var.max_task_count  # 4
+  }
+}
+```
+
+Restores normal scaling range at 8 AM UTC.
+
+Time Zones
+----------
+AWS scheduled scaling uses UTC. To convert:
+
+| Your Time Zone | 8 AM Local | 10 PM Local |
+|----------------|------------|-------------|
+| UTC | 8:00 | 22:00 |
+| EST (UTC-5) | 13:00 | 03:00+1 |
+| PST (UTC-8) | 16:00 | 06:00+1 |
+| IST (UTC+5:30) | 02:30 | 16:30 |
+
+If you're in IST (India):
+- 8 AM UTC = 1:30 PM IST (scale up)
+- 10 PM UTC = 3:30 AM IST (scale down)
+
+To customize, adjust the cron expressions in autoscaling.tf.
+
+What Happens During Night Mode
+------------------------------
+```
+10:00 PM UTC: Scheduled action triggers
+         │
+         ▼
+Auto Scaling sets min=0, max=0
+         │
+         ▼
+ECS service desired_count → 0
+         │
+         ▼
+Running task receives SIGTERM
+         │
+         ▼
+Task drains and stops
+         │
+         ▼
+ALB has no healthy targets
+         │
+         ▼
+Requests return HTTP 503
+
+8:00 AM UTC: Scheduled action triggers
+         │
+         ▼
+Auto Scaling sets min=1, max=4
+         │
+         ▼
+ECS service desired_count → 1
+         │
+         ▼
+New task starts (Fargate Spot)
+         │
+         ▼
+Task passes health checks
+         │
+         ▼
+ALB routes traffic to task
+         │
+         ▼
+Service operational again
+```
+
+================================================================================
+7. CAPACITY PROVIDER STRATEGY
+================================================================================
+
+What are Capacity Providers?
+----------------------------
+Capacity providers define where tasks run. For Fargate:
+- **FARGATE**: Regular on-demand pricing
+- **FARGATE_SPOT**: Discounted spot pricing
+
+Capacity Provider Strategy
+--------------------------
+The strategy defines how to distribute tasks across providers:
+
+```hcl
+resource "aws_ecs_cluster_capacity_providers" "proj2" {
+  cluster_name = aws_ecs_cluster.proj2_cluster.name
+
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    base              = 0
+    weight            = 1
+    capacity_provider = "FARGATE_SPOT"
+  }
+}
+```
+
+This sets the cluster default to Spot.
+
+Service-Level Strategy
+----------------------
+We override at the service level for more control:
+
+```hcl
+capacity_provider_strategy {
+  capacity_provider = "FARGATE_SPOT"
+  weight            = 4
+  base              = 0
+}
+
+capacity_provider_strategy {
+  capacity_provider = "FARGATE"
+  weight            = 1
+  base              = 1
+}
+```
+
+**base**: Guaranteed minimum tasks on this provider
+**weight**: Relative proportion for additional tasks
+
+How Tasks are Distributed
+-------------------------
+With base=1 for FARGATE and weight 4:1 ratio:
+
+| Desired Count | FARGATE | FARGATE_SPOT | Explanation |
+|---------------|---------|--------------|-------------|
+| 1 | 1 | 0 | Base task on FARGATE |
+| 2 | 1 | 1 | +1 task, 4:1 ratio starts |
+| 3 | 1 | 2 | +1 more on SPOT (4:1) |
+| 4 | 1 | 3 | +1 more on SPOT |
+| 5 | 2 | 3 | Next goes to FARGATE (ratio) |
+
+The base=1 on FARGATE ensures we always have at least one reliable
+task that won't be interrupted by Spot reclamation.
+
+Why This Strategy?
+------------------
+1. **Cost Savings**: 80% of tasks on Spot (~70% cheaper)
+2. **Reliability**: 1 task always on regular Fargate
+3. **Interruption Handling**: If Spot task is interrupted,
+   the regular Fargate task keeps serving traffic
+
+Launch Type vs Capacity Provider
+--------------------------------
+You can't use both! They're mutually exclusive.
+
+Before (Phase E):
+```hcl
+launch_type = "FARGATE"  # Simple, always on-demand
+```
+
+After (Phase H):
+```hcl
+capacity_provider_strategy {  # Flexible, supports Spot
+  capacity_provider = "FARGATE_SPOT"
+  ...
+}
+```
+
+================================================================================
+8. FILE-BY-FILE BREAKDOWN
+================================================================================
+
+--------------------------------------------------------------------------------
+FILE: terraform/autoscaling.tf
+--------------------------------------------------------------------------------
+
+This file contains all auto-scaling configuration.
+
+**Section 1: Cluster Capacity Providers**
+```hcl
+resource "aws_ecs_cluster_capacity_providers" "proj2" {
+  cluster_name = aws_ecs_cluster.proj2_cluster.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+  ...
+}
+```
+Enables Spot on the cluster.
+
+**Section 2: Auto Scaling Target**
+```hcl
+resource "aws_appautoscaling_target" "ecs_target" {
+  max_capacity = 4
+  min_capacity = 1
+  resource_id  = "service/${cluster}/${service}"
+  ...
+}
+```
+Defines what to scale and capacity limits.
+
+**Section 3: CPU Scaling Policy**
+```hcl
+resource "aws_appautoscaling_policy" "ecs_cpu_policy" {
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value = 70.0
+    ...
+  }
+}
+```
+Scales based on CPU utilization.
+
+**Section 4: Request Count Scaling Policy**
+```hcl
+resource "aws_appautoscaling_policy" "ecs_request_policy" {
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label = "${alb}/${target_group}"
+    }
+    target_value = 100.0
+    ...
+  }
+}
+```
+Scales based on traffic volume.
+
+**Section 5: Night Scale-Down**
+```hcl
+resource "aws_appautoscaling_scheduled_action" "scale_down_night" {
+  schedule = "cron(0 22 * * ? *)"
+  scalable_target_action {
+    min_capacity = 0
+    max_capacity = 0
+  }
+}
+```
+Scales to zero at 10 PM UTC.
+
+**Section 6: Morning Scale-Up**
+```hcl
+resource "aws_appautoscaling_scheduled_action" "scale_up_morning" {
+  schedule = "cron(0 8 * * ? *)"
+  scalable_target_action {
+    min_capacity = 1
+    max_capacity = 4
+  }
+}
+```
+Restores capacity at 8 AM UTC.
+
+--------------------------------------------------------------------------------
+FILE: terraform/ecs.tf (Modified)
+--------------------------------------------------------------------------------
+
+Changed ECS service to use capacity providers:
+
+**Before:**
+```hcl
+launch_type = "FARGATE"
+```
+
+**After:**
+```hcl
+capacity_provider_strategy {
+  capacity_provider = "FARGATE_SPOT"
+  weight            = 4
+  base              = 0
+}
+
+capacity_provider_strategy {
+  capacity_provider = "FARGATE"
+  weight            = 1
+  base              = 1
+}
+```
+
+Added lifecycle rule:
+```hcl
+lifecycle {
+  ignore_changes = [desired_count]
+}
+```
+
+This prevents Terraform from reverting auto-scaling changes.
+Without it, every `terraform apply` would reset desired_count.
+
+--------------------------------------------------------------------------------
+FILE: terraform/variables.tf (Additions)
+--------------------------------------------------------------------------------
+
+```hcl
+variable "min_task_count" {
+  description = "Minimum number of ECS tasks"
+  type        = number
+  default     = 1
+}
+
+variable "max_task_count" {
+  description = "Maximum number of ECS tasks"
+  type        = number
+  default     = 4
+}
+```
+
+================================================================================
+9. HOW SCALING WORKS IN PRACTICE
+================================================================================
+
+Scenario 1: Normal Day Operation
+--------------------------------
+```
+8:00 AM: Service starts with 1 task
+         │
+         │ Low traffic (10 req/min)
+         │ CPU: 20%
+         │ Tasks: 1
+         │
+10:00 AM: Traffic increases (150 req/min)
+         │ CPU: 40%
+         │ Request policy: 150 > 100 per target
+         │ → Scale to 2 tasks
+         │
+12:00 PM: Traffic spike (400 req/min)
+         │ CPU: 70%
+         │ Request policy: 400/2 = 200 > 100
+         │ → Scale to 4 tasks
+         │
+3:00 PM: Traffic decreases (200 req/min)
+         │ CPU: 30%
+         │ Request policy: 200/4 = 50 < 100
+         │ → Scale in (5 min cooldown)
+         │ → Scale to 2 tasks
+         │
+6:00 PM: Low traffic again (50 req/min)
+         │ → Scale to 1 task (minimum)
+         │
+10:00 PM: Scheduled scale-down
+         │ → 0 tasks (night mode)
+```
+
+Scenario 2: Traffic Spike
+-------------------------
+```
+Current: 1 task, 50 req/min, 20% CPU
+
+Sudden traffic spike: 500 req/min
+
+Minute 0: 500 req/target → Scale OUT
+Minute 1: Add 1 task (now 2 tasks)
+Minute 2: 250 req/target → Scale OUT
+Minute 3: Add 1 task (now 3 tasks)
+Minute 4: 167 req/target → Scale OUT
+Minute 5: Add 1 task (now 4 tasks = max)
+Minute 6: 125 req/target → Stable (close to target 100)
+
+Total scale-out time: ~5 minutes
+```
+
+Scenario 3: Spot Interruption
+-----------------------------
+```
+Current: 4 tasks (1 FARGATE, 3 SPOT)
+
+AWS needs Spot capacity back:
+
+1. Spot task receives SIGTERM
+2. Task enters DRAINING state
+3. ALB stops sending new requests
+4. 2-minute grace period
+5. Task terminates
+
+Now: 3 tasks (1 FARGATE, 2 SPOT)
+
+If capacity available:
+- ECS starts replacement Spot task
+- Back to 4 tasks
+
+If Spot unavailable:
+- Service continues with 3 tasks
+- FARGATE base task ensures availability
+```
+
+Scenario 4: Night Mode
+----------------------
+```
+9:59 PM: 1 task running normally
+
+10:00 PM: Scheduled action triggers
+         │
+         ▼
+Auto Scaling: min=0, max=0
+         │
+         ▼
+ECS: desired_count = 0
+         │
+         ▼
+Task receives SIGTERM
+         │
+         ▼
+Task drains (30 seconds)
+         │
+         ▼
+Task stops
+         │
+         ▼
+Service: 0 running tasks
+ALB: Returns 503 to all requests
+
+7:59 AM: Still 0 tasks, 503 responses
+
+8:00 AM: Scheduled action triggers
+         │
+         ▼
+Auto Scaling: min=1, max=4
+         │
+         ▼
+ECS: desired_count = 1
+         │
+         ▼
+New task starting...
+         │
+         ▼
+~45-90 seconds: Task running
+         │
+         ▼
+Health checks pass
+         │
+         ▼
+ALB routes traffic
+         │
+         ▼
+Service operational!
+```
+
+================================================================================
+10. COST ANALYSIS
+================================================================================
+
+Before Phase H (Regular Fargate, Always On)
+-------------------------------------------
+- 1 task × 24 hours × 30 days = 720 hours
+- Cost: 720 × $0.01234/hr = **$8.89/month**
+
+After Phase H (Spot + Scheduled)
+--------------------------------
+
+Spot Pricing (70% discount):
+- Daytime: 14 hours (8 AM - 10 PM)
+- Cost per hour: ~$0.0037
+- Monthly daytime: 14 × 30 × $0.0037 = **$1.55/month**
+
+Night Mode (0 tasks):
+- Night: 10 hours (10 PM - 8 AM)
+- Cost: **$0.00/month**
+
+Total: **~$1.55/month** (for compute)
+
+Cost Comparison
+---------------
+| Configuration | Monthly Cost | Savings |
+|---------------|--------------|---------|
+| Regular Fargate (24/7) | $8.89 | Baseline |
+| Fargate Spot (24/7) | $2.67 | 70% |
+| Spot + Scheduled | $1.55 | **83%** |
+
+Note: ALB costs (~$22/month) remain constant.
+
+If You Scale to Multiple Tasks
+------------------------------
+With auto-scaling to 4 tasks during peak:
+
+Regular Fargate:
+- Average 2 tasks × 24 hours = **$17.78/month**
+
+Spot + Scheduled:
+- Average 2 tasks × 14 hours daytime
+- Cost: ~**$3.10/month**
+
+Savings: **82%**
+
+Break-Even Analysis
+-------------------
+When does Spot NOT make sense?
+
+If Spot interruptions cause:
+- Revenue loss > Spot savings
+- SLA violations with penalties
+- Customer churn
+
+For a portfolio project: Spot is perfect!
+For production e-commerce: Consider base=2 or more FARGATE.
+
+================================================================================
+11. TESTING YOUR AUTO-SCALING
+================================================================================
+
+Test 1: Verify Capacity Provider
+--------------------------------
+```bash
+aws ecs describe-services --cluster proj2-cluster --services proj2-service \
+  --query 'services[0].capacityProviderStrategy'
+```
+
+Expected:
+```json
+[
+  {"capacityProvider": "FARGATE_SPOT", "weight": 4, "base": 0},
+  {"capacityProvider": "FARGATE", "weight": 1, "base": 1}
+]
+```
+
+Test 2: Check Auto-Scaling Target
+---------------------------------
+```bash
+aws application-autoscaling describe-scalable-targets \
+  --service-namespace ecs \
+  --query 'ScalableTargets[?ResourceId==`service/proj2-cluster/proj2-service`]'
+```
+
+Expected: Shows min=1, max=4.
+
+Test 3: View Scaling Policies
+-----------------------------
+```bash
+aws application-autoscaling describe-scaling-policies \
+  --service-namespace ecs \
+  --resource-id service/proj2-cluster/proj2-service
+```
+
+Should show CPU and request count policies.
+
+Test 4: Check Scheduled Actions
+-------------------------------
+```bash
+aws application-autoscaling describe-scheduled-actions \
+  --service-namespace ecs \
+  --resource-id service/proj2-cluster/proj2-service
+```
+
+Should show scale-down-night and scale-up-morning.
+
+Test 5: Simulate Load (Manual Scale)
+------------------------------------
+```bash
+# Temporarily set higher desired count
+aws ecs update-service --cluster proj2-cluster --service proj2-service \
+  --desired-count 2
+
+# Watch tasks start
+watch 'aws ecs describe-services --cluster proj2-cluster --services proj2-service \
+  --query "services[0].{Desired:desiredCount,Running:runningCount}"'
+
+# Reset (auto-scaling will manage)
+aws ecs update-service --cluster proj2-cluster --service proj2-service \
+  --desired-count 1
+```
+
+Test 6: Verify Spot Task
+------------------------
+```bash
+# Get task ARN
+TASK_ARN=$(aws ecs list-tasks --cluster proj2-cluster --service proj2-service \
+  --query 'taskArns[0]' --output text)
+
+# Check capacity provider
+aws ecs describe-tasks --cluster proj2-cluster --tasks $TASK_ARN \
+  --query 'tasks[0].capacityProviderName'
+```
+
+Should show "FARGATE" or "FARGATE_SPOT".
+
+Test 7: Load Test (Generate Traffic)
+------------------------------------
+```bash
+# Install hey (HTTP load generator)
+# brew install hey  # or go install github.com/rakyll/hey@latest
+
+# Generate load
+hey -n 1000 -c 50 http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
+
+# Watch for scaling
+watch 'aws ecs describe-services --cluster proj2-cluster --services proj2-service \
+  --query "services[0].runningCount"'
+```
+
+================================================================================
+12. KEY CONCEPTS SUMMARY
+================================================================================
+
+Auto-Scaling Concepts
+---------------------
+- **Scalable Target**: What to scale (ECS service)
+- **Scaling Policy**: When/how to scale (CPU, requests)
+- **Scheduled Action**: Time-based scaling
+- **Cooldown**: Prevent rapid scaling
+
+Fargate Spot
+------------
+- **70% discount** vs regular Fargate
+- **Interruptible** with 2-minute warning
+- Best for: fault-tolerant, cost-sensitive workloads
+- Our strategy: Spot primary, Fargate fallback
+
+Capacity Providers
+------------------
+- **FARGATE**: On-demand, reliable, higher cost
+- **FARGATE_SPOT**: Spot instances, cheaper, interruptible
+- **Base**: Guaranteed minimum on provider
+- **Weight**: Relative distribution ratio
+
+Scheduled Scaling
+-----------------
+- Uses cron expressions (UTC)
+- Overrides min/max capacity
+- Perfect for predictable patterns
+- Our schedule: Active 8 AM - 10 PM UTC
+
+Cost Optimization
+-----------------
+- Spot pricing: ~70% savings
+- Scheduled off-hours: ~40% more savings
+- Combined: ~83% total savings
+- Trade-off: 503 during night hours
+
+================================================================================
+13. COMMON ISSUES AND SOLUTIONS
+================================================================================
+
+Issue: Tasks not scaling out
+----------------------------
+**Symptoms:**
+- High CPU but no new tasks
+- Traffic increasing but staying at 1 task
+
+**Causes:**
+- Already at max_capacity
+- Cooldown period active
+- Insufficient capacity (Spot)
+
+**Solutions:**
+1. Check max_capacity limit
+2. Wait for cooldown (60 seconds for scale-out)
+3. Check CloudWatch for scaling activities:
+   ```bash
+   aws application-autoscaling describe-scaling-activities \
+     --service-namespace ecs \
+     --resource-id service/proj2-cluster/proj2-service
+   ```
+
+Issue: Tasks not scaling in
+---------------------------
+**Symptoms:**
+- Low CPU but tasks not reducing
+- More tasks than needed
+
+**Causes:**
+- Scale-in cooldown (300 seconds)
+- Already at min_capacity
+- Minimum base tasks
+
+**Solutions:**
+1. Wait for cooldown (5 minutes)
+2. Check min_capacity setting
+3. Review capacity provider base settings
+
+Issue: Service stuck at 0 tasks
+-------------------------------
+**Symptoms:**
+- After night schedule, service doesn't start
+- 503 errors during business hours
+
+**Causes:**
+- Morning schedule didn't trigger
+- Capacity provider issues
+- No Spot capacity available
+
+**Solutions:**
+1. Check scheduled action ran:
+   ```bash
+   aws application-autoscaling describe-scheduled-actions \
+     --service-namespace ecs
+   ```
+2. Manually restore capacity:
+   ```bash
+   aws ecs update-service --cluster proj2-cluster \
+     --service proj2-service --desired-count 1
+   ```
+
+Issue: Spot tasks frequently interrupted
+----------------------------------------
+**Symptoms:**
+- Tasks stopping unexpectedly
+- Frequent restarts
+
+**Causes:**
+- High Spot reclamation in region
+- Capacity issues
+
+**Solutions:**
+1. Increase FARGATE base (more reliable tasks)
+2. Use different region
+3. Use FARGATE only (costs more)
+
+Issue: Terraform wants to change desired_count
+----------------------------------------------
+**Symptoms:**
+- Every `terraform apply` shows changes
+- Desired count keeps resetting
+
+**Cause:**
+- Missing lifecycle ignore_changes
+
+**Solution:**
+Ensure ECS service has:
+```hcl
+lifecycle {
+  ignore_changes = [desired_count]
+}
+```
+
+Issue: Wrong scheduled time
+---------------------------
+**Symptoms:**
+- Service scales at unexpected times
+
+**Cause:**
+- Cron expression in UTC, not local time
+
+**Solution:**
+Convert your local time to UTC:
+- IST 8 AM = UTC 2:30 AM
+- EST 8 AM = UTC 1:00 PM
+
+Update cron in autoscaling.tf accordingly.
+
+================================================================================
+CONCLUSION
+================================================================================
+
+In Phase H, we successfully:
+
+1. **Implemented Fargate Spot**: Reduced compute costs by ~70% using
+   spare AWS capacity with intelligent fallback to regular Fargate.
+
+2. **Configured Auto-Scaling**: Service automatically scales 1-4 tasks
+   based on CPU utilization and request count.
+
+3. **Added Scheduled Scaling**: Service scales to 0 at night (10 PM UTC)
+   and back to normal at 8 AM UTC, saving ~40% more.
+
+4. **Optimized Costs**: Combined savings of ~83% on compute costs
+   while maintaining reliability during business hours.
+
+Skills Demonstrated
+-------------------
+- AWS Application Auto Scaling
+- Fargate Spot capacity providers
+- Target tracking scaling policies
+- Scheduled scaling actions
+- Cost optimization strategies
+- Terraform lifecycle management
+
+Professional Value
+------------------
+These skills are valuable for:
+- Cloud Cost Optimization roles
+- FinOps Engineer positions
+- DevOps/Platform Engineering
+- Solutions Architecture
+
+You can now discuss:
+- "I implemented auto-scaling to handle variable traffic"
+- "I used Fargate Spot to reduce costs by 70%"
+- "I configured scheduled scaling for off-hours cost savings"
+- "I achieved 83% cost reduction while maintaining availability"
+
+Final Architecture
+------------------
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              AWS Cloud                                   │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                    Application Auto Scaling                       │  │
+│  │  CPU Policy (70%) │ Request Policy (100/target) │ Scheduled      │  │
+│  └─────────────────────────────────┬────────────────────────────────┘  │
+│                                    │                                    │
+│  ┌─────────────────────────────────┼────────────────────────────────┐  │
+│  │                    ECS Service  │                                 │  │
+│  │                                 ▼                                 │  │
+│  │  Capacity: FARGATE_SPOT (80%) + FARGATE (20%)                    │  │
+│  │  Tasks: 0-4 (scheduled + demand-based)                           │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                    │                                    │
+│                                    ▼                                    │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                           ALB                                     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                    │                                    │
+└────────────────────────────────────┼────────────────────────────────────┘
+                                     │
+                                     ▼
+                                 Internet
+
+Schedule:
+  8 AM UTC ─────────────── 10 PM UTC ─────────────── 8 AM UTC
+     │         SERVICE ON (1-4 tasks)      │  SERVICE OFF (0 tasks) │
+     └─────────────────────────────────────┴────────────────────────┘
+```
+
+Resource Count
+--------------
+- Phase A-C: Flask app, Docker, ECR
+- Phase D: 12 resources (VPC, ALB, security)
+- Phase E: 7 resources (IAM, ECS, CloudWatch logs)
+- Phase F: 11 resources (SNS, alarms, dashboard)
+- Phase G: 12 resources (S3, CodeBuild, CodePipeline)
+- Phase H: 8 resources (Auto Scaling, Spot config)
+- **Total: 50 Terraform-managed resources**
+
+Monthly Cost Estimate
+---------------------
+| Resource | Before Phase H | After Phase H |
+|----------|----------------|---------------|
+| ALB | $22 | $22 |
+| ECS Fargate | $9 | ~$1.55 |
+| Other | $1 | $1 |
+| **Total** | **$32** | **~$24.55** |
+
+Savings: ~$7.45/month (23% total, 83% on compute)
+
+What You've Built
+-----------------
+A complete, production-grade serverless container platform with:
+- Automatic scaling based on demand
+- Cost-optimized compute with Fargate Spot
+- Scheduled scaling for off-hours savings
+- CI/CD pipeline for automated deployments
+- Comprehensive monitoring and alerting
+
+This architecture pattern is used by companies worldwide to run
+cost-effective, scalable containerized applications.
+
+================================================================================
+END OF PHASE H EXPLANATION
+================================================================================

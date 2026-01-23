@@ -42,6 +42,55 @@ Everything is defined as Infrastructure as Code using Terraform.
                                     └─────────────────────────────────────────────────┘
 ```
 
+## Screenshots
+
+### CloudWatch Dashboard
+![CloudWatch Dashboard](docs/screenshots/cloudwatch-dashboard.png)
+
+### CI/CD Pipeline (CodePipeline)
+![CodePipeline](docs/screenshots/codepipeline-succeeded.png)
+
+### ECS Service
+![ECS Service](docs/screenshots/ecs-service.png)
+
+### ALB Health Check
+![ALB Healthy Targets](docs/screenshots/alb-healthy-targets.png)
+
+### VPC Networking
+![VPC Networking](docs/screenshots/vpc-networking.png)
+
+### ECR Repository
+![ECR Repository](docs/screenshots/ecr-repository.png)
+
+### IAM Roles
+![IAM Roles](docs/screenshots/iam-roles.png)
+
+### S3 Pipeline Artifacts
+![S3 Artifacts](docs/screenshots/s3-pipeline-artifacts.png)
+
+## Demo Video
+
+[Watch the 90-second demo](YOUR_VIDEO_LINK_HERE) showing:
+- Live app responding to requests
+- CodePipeline Source → Build → Deploy flow
+- ECS Fargate running tasks
+- CloudWatch dashboard with metrics and alarms
+
+## Skills Demonstrated
+
+This project showcases the following Cloud/DevOps engineering skills:
+
+| Category | Skills |
+|----------|--------|
+| **Infrastructure as Code** | Terraform modules, state management, variables, outputs |
+| **AWS Compute** | ECS Fargate, task definitions, container orchestration |
+| **AWS Networking** | VPC, subnets, security groups, Application Load Balancer |
+| **CI/CD** | CodePipeline, CodeBuild, ECR, automated deployments |
+| **Monitoring & Observability** | CloudWatch logs, metrics, alarms, dashboards |
+| **Cost Optimization** | Fargate Spot (70% savings), scheduled scaling |
+| **Containerization** | Docker, ECR, multi-stage builds |
+| **Security** | IAM roles, security groups, least-privilege access |
+
 ## Project Structure
 
 ```
@@ -65,8 +114,11 @@ Everything is defined as Infrastructure as Code using Terraform.
 │   ├── autoscaling.tf      # Auto-scaling policies
 │   ├── variables.tf        # Input variables
 │   └── outputs.tf          # Output values
-├── buildspec.yml           # CodeBuild instructions
-└── phase-*-explanation.txt # Detailed docs for each phase
+├── buildspec.yml               # CodeBuild instructions
+├── website-content/            # Phase documentation files
+│   └── phase-*-explanation.txt # Detailed docs for each phase
+└── docs/
+    └── screenshots/            # AWS Console screenshots
 ```
 
 ## Prerequisites
@@ -264,14 +316,14 @@ Note: You'll need to manually delete:
 ## Documentation
 
 Each phase of this project has detailed documentation:
-- `phase-a-explanation.txt` - AWS basics and project setup
-- `phase-b-explanation.txt` - VPC and networking
-- `phase-c-explanation.txt` - Security groups and ALB
-- `phase-d-explanation.txt` - ECR and Docker
-- `phase-e-explanation.txt` - ECS Fargate deployment
-- `phase-f-explanation.txt` - Monitoring and alerting
-- `phase-g-explanation.txt` - CI/CD with CodePipeline
-- `phase-h-explanation.txt` - Auto-scaling and cost optimization
+- `website-content/phase-a-explanation.txt` - AWS basics and project setup
+- `website-content/phase-b-explanation.txt` - VPC and networking
+- `website-content/phase-c-explanation.txt` - Security groups and ALB
+- `website-content/phase-d-explanation.txt` - ECR and Docker
+- `website-content/phase-e-explanation.txt` - ECS Fargate deployment
+- `website-content/phase-f-explanation.txt` - Monitoring and alerting
+- `website-content/phase-g-explanation.txt` - CI/CD with CodePipeline
+- `website-content/phase-h-explanation.txt` - Auto-scaling and cost optimization
 
 ## Tech Stack
 

@@ -80,7 +80,7 @@ Everything is defined as Infrastructure as Code using Terraform.
 
 ## Skills Demonstrated
 
-This project showcases the following Cloud/DevOps engineering skills:
+What I learned and applied in this project:
 
 | Category | Skills |
 |----------|--------|

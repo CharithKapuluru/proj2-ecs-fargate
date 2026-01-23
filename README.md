@@ -4,6 +4,8 @@ A production-ready containerized application running on AWS ECS Fargate with ful
 
 **Live Demo:** http://proj2-alb-830302272.us-east-1.elb.amazonaws.com/
 
+**Project Write-up:** https://charithkapuluru.com/projects/terraform-ecs-deployment/
+
 ## What This Is
 
 This project deploys a Flask API to AWS using:
@@ -70,7 +72,7 @@ Everything is defined as Infrastructure as Code using Terraform.
 
 ## Demo Video
 
-[Watch the 90-second demo](YOUR_VIDEO_LINK_HERE) showing:
+[Watch the 2-minute demo](https://youtu.be/BFJp-hrPYKg) showing:
 - Live app responding to requests
 - CodePipeline Source → Build → Deploy flow
 - ECS Fargate running tasks
